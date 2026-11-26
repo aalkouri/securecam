@@ -129,6 +129,13 @@ and another port:
 $env:SECURECAM_DATA = "$env:TEMP\securecam-test"; $env:PORT = "8099"; node server/index.js
 ```
 
+**Always start and restart the real server with `npm run restart`.** Do not
+kill only the process listening on the port: its `node --watch` parent survives
+and respawns a copy on every code change. Such a copy used to linger without
+the port while running its own ffmpeg into `data/streams/`, locking the
+folders (EBUSY) and double-writing streams. The server now exits if it cannot
+bind its port, and the restart script clears stale `--watch` copies.
+
 `npm run restart` (scripts/restart.ps1) stops whatever serves the port, with
 its ffmpeg processes, and starts `node --watch server/index.js` in the
 background, logging to `data/server.log` and `data/server-error.log`.
