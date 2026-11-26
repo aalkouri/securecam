@@ -8,7 +8,7 @@ import { getCameras } from './store.js';
 import { gridUrl, isClip, clipPath } from './cameras.js';
 import { detect, loadModels, modelStatus } from './detector.js';
 import {
-  SNAPSHOT_DIR, getSetting, setSetting, findMatch, createObject,
+  SNAPSHOT_DIR, MIN_SIGHTINGS, getSetting, setSetting, findMatch, createObject,
   updateObjectSignature, recordSighting, counts,
 } from './database.js';
 
@@ -109,6 +109,7 @@ class DetectionLoop {
       lastError: this.lastError,
       processed: this.processed,
       detections: this.detections,
+      minSightings: MIN_SIGHTINGS,
       models: modelStatus(),
       ...counts(),
     };

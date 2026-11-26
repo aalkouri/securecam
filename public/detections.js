@@ -33,11 +33,13 @@ function renderStatus(s) {
     s.models?.detect ? 'detection model ready' : 'detection model missing',
     s.models?.reid ? 'ReID model ready' : 'fingerprint fallback',
     `${s.objects || 0} objects · ${s.sightings || 0} sightings · ${s.unreadAlerts || 0} unread alerts`,
+    `shown after ${s.minSightings || 3} sightings`,
   ];
   if (s.lastError) line.push(`Error: ${s.lastError}`);
   $('detection-status').textContent = line.join(' · ');
   $('detection-enabled').checked = Boolean(s.enabled);
   $('detection-interval').value = String(s.intervalMs || 4000);
+  $('objects-note').textContent = `An object appears here only after it has been seen more than ${(s.minSightings || 3) - 1} times. Type in a Name box to rename it.`;
 }
 
 async function loadStatus() {
@@ -86,7 +88,7 @@ function renderObjects(objects) {
           </div>
         </article>`;
     }).join('')
-    : '<p class="hint">No matching objects. Detection will add them as cameras are watched.</p>';
+    : '<p class="hint">Nothing to name yet. Objects appear here once they have been seen more than twice.</p>';
 }
 
 async function loadObjects() {

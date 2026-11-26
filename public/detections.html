@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Detections — SecureCam</title>
+  <title>Detection — SecureCam</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -43,7 +43,7 @@
 
     <section class="panel">
       <div class="section-head">
-        <h2>Known objects</h2>
+        <h2>Objects to name</h2>
         <div class="filters">
           <select id="kind-filter" aria-label="Filter by type">
             <option value="">All types</option>
@@ -59,6 +59,7 @@
           <input type="text" id="object-search" placeholder="Search name or ID" autocomplete="off">
         </div>
       </div>
+      <p class="hint" id="objects-note">An object appears here only after it has been seen more than twice. Type in a Name box to rename it.</p>
       <div id="objects" class="object-grid"></div>
     </section>
 

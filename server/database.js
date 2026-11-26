@@ -6,6 +6,10 @@ import crypto from 'node:crypto';
 import { DATA_DIR } from './store.js';
 
 export const SNAPSHOT_DIR = path.join(DATA_DIR, 'snapshots');
+// Nothing is shown in the UI (and no alert is raised) until an object has been
+// seen more than twice. Records are still kept from the first sighting so
+// re-identification can build up a history.
+export const MIN_SIGHTINGS = 3;
 const db = new DatabaseSync(path.join(DATA_DIR, 'securecam.db'));
 
 db.exec(`
@@ -95,8 +99,8 @@ const LATEST = `o.*,
 
 export function listObjects(kind) {
   const rows = kind
-    ? db.prepare(`SELECT ${LATEST} FROM objects o WHERE kind = ? ORDER BY last_seen_at DESC, created_at DESC`).all(kind)
-    : db.prepare(`SELECT ${LATEST} FROM objects o ORDER BY last_seen_at DESC, created_at DESC`).all();
+    ? db.prepare(`SELECT ${LATEST} FROM objects o WHERE kind = ? AND o.sightings >= ? ORDER BY last_seen_at DESC, created_at DESC`).all(kind, MIN_SIGHTINGS)
+    : db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.sightings >= ? ORDER BY last_seen_at DESC, created_at DESC`).all(MIN_SIGHTINGS);
   return rows.map(objectRow);
 }
 
@@ -166,8 +170,10 @@ export function createObject(kind, embedding, fingerprint) {
   }
   const now = new Date().toISOString();
   const name = `${kindLabel(kind)} ${n}`;
+  // Start at 0: recordSighting() increments this, so the count always matches
+  // the number of sighting rows and the "seen more than twice" gate is exact.
   db.prepare(`INSERT INTO objects(id, identifier, kind, name, created_at, last_seen_at, sightings, embedding, fingerprint)
-              VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+              VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`)
     .run(id, identifier, kind, name, now, now,
       embedding ? JSON.stringify(embedding) : null, fingerprint || null);
   return getObject(id);
@@ -209,12 +215,12 @@ const SIGHTING_SELECT = `SELECT s.*, o.name, o.identifier, o.kind FROM sightings
                          JOIN objects o ON o.id = s.object_id`;
 
 export function listSightings({ objectId, cameraId, kind, limit = 60 } = {}) {
-  const where = [];
-  const args = [];
+  const where = ['o.sightings >= ?'];
+  const args = [MIN_SIGHTINGS];
   if (objectId) { where.push('s.object_id = ?'); args.push(objectId); }
   if (cameraId) { where.push('s.camera_id = ?'); args.push(cameraId); }
   if (kind) { where.push('o.kind = ?'); args.push(kind); }
-  const sql = `${SIGHTING_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+  const sql = `${SIGHTING_SELECT} WHERE ${where.join(' AND ')}
                ORDER BY s.seen_at DESC LIMIT ?`;
   return db.prepare(sql).all(...args, Math.min(Number(limit) || 60, 200)).map(sightingRow);
 }
@@ -237,10 +243,12 @@ export function recordSighting({ object, camera, confidence, bbox, snapshot, emb
   db.prepare('UPDATE objects SET sightings = sightings + 1, last_seen_at = ? WHERE id = ?').run(seenAt, object.id);
 
   let alert = null;
+  // Stay quiet until we've seen this object more than twice.
+  const seen = db.prepare('SELECT sightings FROM objects WHERE id = ?').get(object.id).sightings;
   const lastAlert = db.prepare(`SELECT created_at FROM alerts WHERE object_id = ? AND camera_id = ? ORDER BY created_at DESC LIMIT 1`)
     .get(object.id, camera.id);
   const quiet = lastAlert && (Date.parse(seenAt) - Date.parse(lastAlert.created_at)) < alertCooldownMs;
-  if (!quiet) {
+  if (seen >= MIN_SIGHTINGS && !quiet) {
     const message = `${object.name} showed up in camera ${camera.name}`;
     db.prepare(`INSERT INTO alerts(object_id, sighting_id, camera_id, camera_name, message, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)`)
@@ -253,8 +261,8 @@ export function recordSighting({ object, camera, confidence, bbox, snapshot, emb
 export function listAlerts({ since = 0, limit = 50 } = {}) {
   return db.prepare(`SELECT a.id, a.object_id, a.sighting_id, a.camera_id, a.camera_name, a.message, a.created_at, a.ack, o.name, o.identifier, o.kind
                      FROM alerts a JOIN objects o ON o.id = a.object_id
-                     WHERE a.id > ? ORDER BY a.id DESC LIMIT ?`)
-    .all(Number(since) || 0, Math.min(Number(limit) || 50, 200))
+                     WHERE a.id > ? AND o.sightings >= ? ORDER BY a.id DESC LIMIT ?`)
+    .all(Number(since) || 0, MIN_SIGHTINGS, Math.min(Number(limit) || 50, 200))
     .map((row) => ({
       id: row.id,
       objectId: row.object_id,
@@ -279,10 +287,11 @@ export function ackAlerts(ids, all = false) {
 
 export function counts() {
   return {
-    objects: db.prepare('SELECT COUNT(*) AS n FROM objects').get().n,
-    sightings: db.prepare('SELECT COUNT(*) AS n FROM sightings').get().n,
-    alerts: db.prepare('SELECT COUNT(*) AS n FROM alerts').get().n,
-    unreadAlerts: db.prepare('SELECT COUNT(*) AS n FROM alerts WHERE ack = 0').get().n,
+    objects: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE sightings >= ?').get(MIN_SIGHTINGS).n,
+    tracked: db.prepare('SELECT COUNT(*) AS n FROM objects').get().n,
+    sightings: db.prepare(`SELECT COUNT(*) AS n FROM sightings s JOIN objects o ON o.id = s.object_id WHERE o.sightings >= ?`).get(MIN_SIGHTINGS).n,
+    alerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE o.sightings >= ?`).get(MIN_SIGHTINGS).n,
+    unreadAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE a.ack = 0 AND o.sightings >= ?`).get(MIN_SIGHTINGS).n,
   };
 }
 

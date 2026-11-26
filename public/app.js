@@ -406,7 +406,13 @@ function showToast(alert) {
 
 async function pollAlerts() {
   try {
-    const alerts = await api('/api/alerts?limit=10');
+    const [alerts, status] = await Promise.all([
+      api('/api/alerts?limit=10'),
+      api('/api/detection/status'),
+    ]);
+    const badge = document.getElementById('detection-count');
+    badge.textContent = status.objects || 0;
+    badge.classList.toggle('hidden', !status.objects);
     const newest = alerts[0]?.id || 0;
     if (lastAlertId === null) lastAlertId = newest;
     else {

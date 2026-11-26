@@ -73,11 +73,17 @@ can't load). Results go into SQLite at `data/securecam.db`:
   camera.
 
 Repeated sightings from the same camera within 30s are collapsed; alerts have
-a 60s cooldown. Both intervals are stored in the `settings` DB table. The
-dashboard shows new alerts as toasts; `/detections.html` lets the owner rename
-objects and browse sightings. Embeddings are only stored server-side — API
-responses never include them. Model files are downloaded once from the pinned
-Ultralytics release into `data/models/` and verified by SHA-256.
+a 60s cooldown. Both intervals are stored in the `settings` DB table.
+
+**Nothing is shown until an object has been seen more than twice.** The owner
+asked for this explicitly after seeing a first-sighting popup. `MIN_SIGHTINGS`
+in `server/database.js` is 3 and gates the objects/sightings/alerts API queries
+*and* alert creation. Records are still written from the first sighting so
+re-identification has a history — only the UI and alerts stay quiet. The
+dashboard has a **Detection** button (with a badge) linking to `/detections.html`,
+where the owner names objects and browses sightings. Embeddings are only stored
+server-side — API responses never include them. Model files are downloaded once
+from the pinned Ultralytics release into `data/models/` and verified by SHA-256.
 
 ## Rules that must hold
 

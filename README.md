@@ -58,10 +58,15 @@ and add a camera of type *Other* with the URL `clip://your-file.mp4`.
 Every enabled camera is sampled for a frame every few seconds. Detection runs
 locally with ONNX Runtime — nothing is sent to a cloud service. It recognises
 cars, trucks, buses, motorcycles, bicycles, people, cats and dogs. Known
-objects are given a permanent ID such as `CAR-0001`; click **Detections** in the
+objects are given a permanent ID such as `CAR-0001`; click **Detection** in the
 header to rename one, browse its sightings, and see alerts like
 *"Blue truck showed up in camera Driveway"*. New alerts also pop up on the
 camera dashboard.
+
+To keep single glimpses from becoming noise, an object is only shown and only
+raises an alert once it has been seen **more than twice** (3 sightings). It is
+still tracked from the first sighting — the badge on the **Detection** button
+counts objects that have crossed that threshold.
 
 On first run the app downloads two small models (~23 MB total) from the pinned
 Ultralytics release into `data/models/` and verifies their checksums. Detection
