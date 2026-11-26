@@ -1,6 +1,7 @@
 import express from 'express';
 import session from 'express-session';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSettings, getCameras, saveCameras } from './store.js';
@@ -12,7 +13,7 @@ import { streams, STREAM_DIR, probe } from './streams.js';
 import { validateCamera, publicCamera, gridUrl, hdUrl } from './cameras.js';
 import { detection } from './detection.js';
 import {
-  SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject,
+  SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
   listSightings, listAlerts, ackAlerts, closeDatabase,
 } from './database.js';
 
@@ -230,6 +231,19 @@ app.patch('/api/objects/:id', (req, res) => {
   }
 });
 
+app.delete('/api/objects/:id', (req, res) => {
+  try {
+    const snapshots = deleteObject(req.params.id);
+    for (const name of snapshots) {
+      if (!/^[\w-]+\.jpg$/i.test(name)) continue;
+      try { fs.unlinkSync(path.join(SNAPSHOT_DIR, name)); } catch { /* already gone */ }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(err.message === 'Object not found' ? 404 : 400).json({ error: err.message });
+  }
+});
+
 app.get('/api/objects/:id/sightings', (req, res) => {
   if (!getObject(req.params.id)) return res.status(404).json({ error: 'Object not found' });
   res.json(listSightings({ objectId: req.params.id, limit: req.query.limit }));
@@ -268,6 +282,15 @@ detection.start();
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`SecureCam running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+});
+
+// If the port is taken, another copy is already serving. Quit instead of
+// lingering as a second set of ffmpeg processes writing into the same folders.
+server.on('error', (err) => {
+  console.error(`Could not listen on ${HOST}:${PORT}: ${err.code || err.message}`);
+  detection.stop();
+  streams.stopAll();
+  process.exit(1);
 });
 
 function shutdown() {

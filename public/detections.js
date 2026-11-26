@@ -32,7 +32,8 @@ const GROUPS = {
 const GROUP_LABEL = { person: 'people', vehicles: 'vehicles', animals: 'animals' };
 let allObjects = [];
 let currentGroup = '';
-let statusTimer = null;
+let pendingClose = null;
+let closeTimer = null;
 
 function selectValue(id, value) {
   const el = $(id);
@@ -61,7 +62,7 @@ function renderStatus(s) {
   $('detection-interval').value = String(s.intervalMs || 4000);
   selectValue('detection-gap', s.sightingGapMs || 60_000);
   selectValue('detection-cooldown', s.alertCooldownMs || 300_000);
-  $('objects-note').textContent = `An object appears here only after it has been seen more than ${(s.minSightings || 3) - 1} times. People are saved as face shots and matched by face, not clothing. Type in a Name box to rename it.`;
+  $('objects-note').textContent = `An object appears here only after it has been seen more than ${(s.minSightings || 3) - 1} times. People are saved as face shots and matched by face, not clothing. Type a name and press Confirm to save it. Reload the page to see anything new.`;
 }
 
 async function loadStatus() {
@@ -99,28 +100,37 @@ function renderObjects(objects) {
       const img = snapshot(o.latestSnapshot);
       return `
         <article class="object-card">
-          ${img ? `<img src="${img}" alt="Latest sighting of ${esc(o.name)}">` : '<div class="no-image">No snapshot</div>'}
+          <div class="object-media">
+            ${img ? `<img src="${img}" alt="Latest sighting">` : '<div class="no-image">No snapshot</div>'}
+            <button type="button" class="object-remove" data-close="${esc(o.id)}" title="Remove this object" aria-label="Remove ${esc(o.identifier)}">×</button>
+          </div>
           <div class="object-body">
             <div class="object-title">
               <input type="text" class="object-name" data-id="${esc(o.id)}" value="${esc(o.name)}" maxlength="64" aria-label="Name">
               <span class="identifier">${esc(o.identifier)}</span>
             </div>
-            <div class="hint">${esc(o.kind)} · ${o.sightings} sightings · last seen ${when(o.lastSeen)}</div>
-            <button class="icon" data-view="${esc(o.id)}">View sightings</button>
+            <div class="card-actions">
+              <button type="button" class="card-btn" data-confirm="${esc(o.id)}">Confirm</button>
+              <button type="button" class="card-btn" data-view="${esc(o.id)}">View Sightings</button>
+            </div>
           </div>
         </article>`;
     }).join('')
     : `<p class="hint">No ${GROUP_LABEL[currentGroup] || 'objects'} to name yet. They appear here once they have been seen more than twice.</p>`;
 }
 
-async function loadObjects() {
-  allObjects = await api('/api/objects');
-  renderObjects(allObjects);
+function renderSightingFilter() {
   const select = $('sighting-filter');
   const selected = select.value;
   select.innerHTML = '<option value="">All objects</option>'
     + allObjects.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(o.identifier)}</option>`).join('');
   select.value = selected && allObjects.some((o) => o.id === selected) ? selected : '';
+}
+
+async function loadObjects() {
+  allObjects = await api('/api/objects');
+  renderObjects(allObjects);
+  renderSightingFilter();
 }
 
 async function loadSightings() {
@@ -136,6 +146,7 @@ async function loadSightings() {
     : '<p class="hint">No sightings yet.</p>';
 }
 
+// Load once. Nothing on this page polls; reload to pick up new detections.
 async function refresh() {
   try {
     await Promise.all([loadStatus(), loadAlerts(), loadObjects(), loadSightings()]);
@@ -145,7 +156,6 @@ async function refresh() {
 }
 
 $('detection-save').addEventListener('click', async () => {
-  clearInterval(statusTimer);
   try {
     await api('/api/detection/settings', {
       method: 'POST',
@@ -157,8 +167,8 @@ $('detection-save').addEventListener('click', async () => {
       }),
     });
     await loadStatus();
-  } finally {
-    statusTimer = setInterval(loadStatus, 5000);
+  } catch (err) {
+    console.error(err);
   }
 });
 
@@ -174,28 +184,73 @@ $('alerts-list').addEventListener('click', async (e) => {
   loadAlerts();
 });
 
-$('objects').addEventListener('change', async (e) => {
-  const input = e.target.closest('.object-name');
-  if (!input) return;
-  try {
-    await api(`/api/objects/${input.dataset.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ name: input.value }),
-    });
-    loadObjects();
-    loadAlerts();
-  } catch (err) {
-    input.value = allObjects.find((o) => o.id === input.dataset.id)?.name || '';
-    console.error(err);
+$('objects').addEventListener('click', async (e) => {
+  const confirmButton = e.target.closest('[data-confirm]');
+  if (confirmButton) {
+    const input = confirmButton.closest('.object-card').querySelector('.object-name');
+    try {
+      const updated = await api(`/api/objects/${confirmButton.dataset.confirm}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: input.value }),
+      });
+      const object = allObjects.find((o) => o.id === updated.id);
+      if (object) object.name = updated.name;
+      input.value = updated.name;
+      confirmButton.textContent = 'Saved';
+      confirmButton.classList.add('saved');
+      setTimeout(() => {
+        if (!confirmButton.isConnected) return;
+        confirmButton.textContent = 'Confirm';
+        confirmButton.classList.remove('saved');
+      }, 1500);
+      renderSightingFilter();
+    } catch (err) {
+      console.error(err);
+      input.value = allObjects.find((o) => o.id === confirmButton.dataset.confirm)?.name || input.value;
+    }
+    return;
   }
-});
 
-$('objects').addEventListener('click', (e) => {
-  const id = e.target.closest('[data-view]')?.dataset.view;
-  if (!id) return;
-  $('sighting-filter').value = id;
-  loadSightings();
-  $('sightings').scrollIntoView({ behavior: 'smooth' });
+  const viewButton = e.target.closest('[data-view]');
+  if (viewButton) {
+    $('sighting-filter').value = viewButton.dataset.view;
+    loadSightings();
+    $('sightings').scrollIntoView({ behavior: 'smooth' });
+    return;
+  }
+
+  const closeButton = e.target.closest('[data-close]');
+  if (closeButton) {
+    const id = closeButton.dataset.close;
+    if (pendingClose !== id) {
+      pendingClose = id;
+      closeButton.classList.add('confirming');
+      closeButton.textContent = '?';
+      closeButton.title = 'Click again to remove';
+      clearTimeout(closeTimer);
+      closeTimer = setTimeout(() => {
+        pendingClose = null;
+        if (!closeButton.isConnected) return;
+        closeButton.classList.remove('confirming');
+        closeButton.textContent = '×';
+        closeButton.title = 'Remove this object';
+      }, 4000);
+      return;
+    }
+    clearTimeout(closeTimer);
+    pendingClose = null;
+    try {
+      await api(`/api/objects/${id}`, { method: 'DELETE' });
+      allObjects = allObjects.filter((o) => o.id !== id);
+      if ($('sighting-filter').value === id) $('sighting-filter').value = '';
+      renderObjects(allObjects);
+      renderSightingFilter();
+      loadSightings();
+      loadAlerts();
+    } catch (err) {
+      console.error(err);
+    }
+  }
 });
 
 $('object-tabs').addEventListener('click', (e) => {
@@ -215,5 +270,3 @@ $('logout-btn').addEventListener('click', async () => {
 });
 
 refresh();
-statusTimer = setInterval(loadStatus, 5000);
-setInterval(() => { loadAlerts(); loadObjects(); }, 10_000);

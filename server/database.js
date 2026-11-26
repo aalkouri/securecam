@@ -192,6 +192,16 @@ export function renameObject(id, name) {
   return getObject(id);
 }
 
+// Removing an object also removes its sightings and alerts (FK cascade).
+// Return the snapshot names so the caller can delete the files.
+export function deleteObject(id) {
+  const snapshots = db.prepare('SELECT snapshot FROM sightings WHERE object_id = ?').all(id)
+    .map((row) => row.snapshot);
+  const result = db.prepare('DELETE FROM objects WHERE id = ?').run(id);
+  if (!result.changes) throw new Error('Object not found');
+  return snapshots;
+}
+
 export function updateObjectSignature(id, embedding, fingerprint, seenAt) {
   db.prepare(`UPDATE objects SET last_seen_at = ?,
               embedding = COALESCE(?, embedding),
