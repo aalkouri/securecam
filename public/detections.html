@@ -29,6 +29,18 @@
           <option value="10000">Every 10 seconds</option>
           <option value="30000">Every 30 seconds</option>
         </select>
+        <select id="detection-gap" aria-label="Repeat delay">
+          <option value="30000">Flicker guard 30 seconds</option>
+          <option value="60000">Flicker guard 1 minute</option>
+          <option value="180000">Flicker guard 3 minutes</option>
+          <option value="300000">Flicker guard 5 minutes</option>
+        </select>
+        <select id="detection-cooldown" aria-label="Alert cooldown">
+          <option value="60000">Alert every 1 minute</option>
+          <option value="300000">Alert every 5 minutes</option>
+          <option value="900000">Alert every 15 minutes</option>
+          <option value="3600000">Alert every hour</option>
+        </select>
         <button id="detection-save" class="primary">Save</button>
       </div>
     </section>
@@ -43,23 +55,18 @@
 
     <section class="panel">
       <div class="section-head">
-        <h2>Objects to name</h2>
+        <h2>Detected objects</h2>
         <div class="filters">
-          <select id="kind-filter" aria-label="Filter by type">
-            <option value="">All types</option>
-            <option value="car">Cars</option>
-            <option value="truck">Trucks</option>
-            <option value="bus">Buses</option>
-            <option value="person">People</option>
-            <option value="bicycle">Bicycles</option>
-            <option value="motorcycle">Motorcycles</option>
-            <option value="cat">Cats</option>
-            <option value="dog">Dogs</option>
-          </select>
           <input type="text" id="object-search" placeholder="Search name or ID" autocomplete="off">
         </div>
       </div>
-      <p class="hint" id="objects-note">An object appears here only after it has been seen more than twice. Type in a Name box to rename it.</p>
+      <div class="tabs" id="object-tabs" role="group" aria-label="Object categories">
+        <button type="button" class="tab active" data-group="">Objects to name</button>
+        <button type="button" class="tab" data-group="person">People</button>
+        <button type="button" class="tab" data-group="vehicles">Vehicles</button>
+        <button type="button" class="tab" data-group="animals">Animals</button>
+      </div>
+      <p class="hint" id="objects-note">An object appears here only after it has been seen more than twice. People are saved as face shots and matched by face, not clothing. Type in a Name box to rename it.</p>
       <div id="objects" class="object-grid"></div>
     </section>
 

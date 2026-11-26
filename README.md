@@ -68,14 +68,27 @@ raises an alert once it has been seen **more than twice** (3 sightings). It is
 still tracked from the first sighting — the badge on the **Detection** button
 counts objects that have crossed that threshold.
 
-On first run the app downloads two small models (~23 MB total) from the pinned
-Ultralytics release into `data/models/` and verifies their checksums. Detection
-can be paused and its interval changed from the Detections page. Snapshots and
-the SQLite database (`securecam.db`) live in `data/` and are never committed.
+People are saved as **face shots only**: a person is skipped unless a face is
+clearly visible, and identity comes from a 512-dimensional face embedding, not
+clothing. Vehicles keep their body snapshot. The Detections page has separate
+**Objects to name**, **People**, **Vehicles** and **Animals** buttons so you can
+work through one group at a time.
 
-Re-identification uses generic vehicle embeddings, not licence-plate reading.
-The same car seen again from a similar angle will normally be matched to its
-existing record; lighting changes or a different camera can create a new one.
+Repeats are collapsed: an object is recorded just three times so it can be
+named, then no more rows are added while it stays in view. Leaving and returning
+is a new sighting, and alerts are throttled to at most one every **5 minutes**.
+A 1-minute flicker guard stops brief detection dropouts from counting as
+re-arrivals. Both delays, the scan interval, and the on/off switch can be
+changed from the Detections page.
+
+On first run the app downloads four small models (~36 MB total) into
+`data/models/` and verifies their checksums. Snapshots and the SQLite database
+(`securecam.db`) live in `data/` and are never committed.
+
+Re-identification uses generic vehicle embeddings and ArcFace face embeddings,
+not licence-plate reading. The same car seen again from a similar angle will
+normally be matched to its existing record; lighting changes or a different
+camera can create a new one.
 
 ## Configuration
 

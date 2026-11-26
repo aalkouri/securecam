@@ -203,6 +203,17 @@ app.post('/api/detection/settings', (req, res) => {
     setSetting('detection.intervalMs', ms);
     detection.restart();
   }
+  for (const [key, field, min, max] of [
+    ['detection.sightingGapMs', 'sightingGapMs', 1000, 3_600_000],
+    ['detection.alertCooldownMs', 'alertCooldownMs', 1000, 3_600_000],
+  ]) {
+    if (body[field] === undefined) continue;
+    const ms = Number(body[field]);
+    if (!Number.isFinite(ms) || ms < min || ms > max) {
+      return res.status(400).json({ error: `${field} must be between ${min} and ${max} ms` });
+    }
+    setSetting(key, ms);
+  }
   res.json(detection.status());
 });
 

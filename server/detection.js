@@ -84,6 +84,9 @@ class DetectionLoop {
     this.lastError = null;
     this.processed = 0;
     this.detections = 0;
+    // camera:object keys seen on the previous scan, used to tell a still-visible
+    // object from a genuine re-arrival.
+    this.present = new Set();
   }
 
   get enabled() {
@@ -105,6 +108,8 @@ class DetectionLoop {
       running: Boolean(this.timer),
       busy: this.busy,
       intervalMs: this.intervalMs,
+      sightingGapMs: getSetting('detection.sightingGapMs', 60_000),
+      alertCooldownMs: getSetting('detection.alertCooldownMs', 300_000),
       lastRun: this.lastRun,
       lastError: this.lastError,
       processed: this.processed,
@@ -145,10 +150,12 @@ class DetectionLoop {
       this.busy = false;
       return;
     }
+    const previouslyPresent = this.present;
+    const nowPresent = new Set();
     try {
       fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
-      const gap = getSetting('detection.sightingGapMs', 30_000);
-      const cooldown = getSetting('detection.alertCooldownMs', 60_000);
+      const gap = getSetting('detection.sightingGapMs', 60_000);
+      const cooldown = getSetting('detection.alertCooldownMs', 300_000);
       for (const camera of getCameras().filter((c) => c.enabled)) {
         try {
           const frame = await captureFrame(camera);
@@ -156,38 +163,45 @@ class DetectionLoop {
           const found = await detect(frame);
           for (const item of found) {
             this.detections += 1;
-            await this.save(camera, item, gap, cooldown);
+            await this.save(camera, item, gap, cooldown, previouslyPresent, nowPresent);
           }
         } catch (err) {
           console.warn(`Detection failed for ${camera.name}: ${err.message}`);
         }
       }
     } finally {
+      this.present = nowPresent;
       this.busy = false;
     }
   }
 
-  async save(camera, item, gap, cooldown) {
+  async save(camera, item, gap, cooldown, previouslyPresent, nowPresent) {
     const match = findMatch(item.kind, item.embedding, item.fingerprint);
     const seenAt = new Date().toISOString();
     const object = match
       ? match.object
       : createObject(item.kind, item.embedding, item.fingerprint);
     if (match) updateObjectSignature(object.id, item.embedding, item.fingerprint, seenAt);
+    const key = `${camera.id}:${object.id}`;
+    const wasPresent = previouslyPresent.has(key);
+    nowPresent.add(key);
 
     const snapshot = `${crypto.randomUUID()}.jpg`;
     fs.writeFileSync(path.join(SNAPSHOT_DIR, snapshot), item.snapshot);
-    recordSighting({
+    const result = recordSighting({
       object, camera: { id: camera.id, name: camera.name },
       confidence: item.confidence,
       bbox: item.bbox,
       snapshot,
-      embedding: item.embedding,
-      fingerprint: item.fingerprint,
       seenAt,
       sightingGapMs: gap,
       alertCooldownMs: cooldown,
+      wasPresent,
     });
+    if (!result.sighting) {
+      // No sighting was kept, so don't leave an unused snapshot behind.
+      fs.unlinkSync(path.join(SNAPSHOT_DIR, snapshot));
+    }
   }
 }
 

@@ -24,14 +24,34 @@ const when = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
 const pct = (n) => `${Math.round((Number(n) || 0) * 100)}%`;
 const snapshot = (name) => (name ? `/api/snapshots/${encodeURIComponent(name)}` : '');
 
+const GROUPS = {
+  person: ['person'],
+  vehicles: ['car', 'truck', 'bus', 'motorcycle', 'bicycle'],
+  animals: ['cat', 'dog'],
+};
+const GROUP_LABEL = { person: 'people', vehicles: 'vehicles', animals: 'animals' };
 let allObjects = [];
+let currentGroup = '';
 let statusTimer = null;
+
+function selectValue(id, value) {
+  const el = $(id);
+  const str = String(value);
+  if (![...el.options].some((option) => option.value === str)) {
+    const option = document.createElement('option');
+    option.value = str;
+    option.textContent = `${(value / 60_000).toFixed(1)} minutes (current)`;
+    el.appendChild(option);
+  }
+  el.value = str;
+}
 
 function renderStatus(s) {
   const line = [
     s.enabled ? 'Detection on' : 'Detection off',
     s.models?.detect ? 'detection model ready' : 'detection model missing',
     s.models?.reid ? 'ReID model ready' : 'fingerprint fallback',
+    s.models?.face && s.models?.faceEmbed ? 'face models ready' : 'face models missing',
     `${s.objects || 0} objects · ${s.sightings || 0} sightings · ${s.unreadAlerts || 0} unread alerts`,
     `shown after ${s.minSightings || 3} sightings`,
   ];
@@ -39,7 +59,9 @@ function renderStatus(s) {
   $('detection-status').textContent = line.join(' · ');
   $('detection-enabled').checked = Boolean(s.enabled);
   $('detection-interval').value = String(s.intervalMs || 4000);
-  $('objects-note').textContent = `An object appears here only after it has been seen more than ${(s.minSightings || 3) - 1} times. Type in a Name box to rename it.`;
+  selectValue('detection-gap', s.sightingGapMs || 60_000);
+  selectValue('detection-cooldown', s.alertCooldownMs || 300_000);
+  $('objects-note').textContent = `An object appears here only after it has been seen more than ${(s.minSightings || 3) - 1} times. People are saved as face shots and matched by face, not clothing. Type in a Name box to rename it.`;
 }
 
 async function loadStatus() {
@@ -68,9 +90,9 @@ async function loadAlerts() {
 }
 
 function renderObjects(objects) {
-  const kind = $('kind-filter').value;
+  const kinds = GROUPS[currentGroup];
   const query = $('object-search').value.trim().toLowerCase();
-  const visible = objects.filter((o) => (!kind || o.kind === kind)
+  const visible = objects.filter((o) => (!kinds || kinds.includes(o.kind))
     && (!query || `${o.name} ${o.identifier}`.toLowerCase().includes(query)));
   $('objects').innerHTML = visible.length
     ? visible.map((o) => {
@@ -88,7 +110,7 @@ function renderObjects(objects) {
           </div>
         </article>`;
     }).join('')
-    : '<p class="hint">Nothing to name yet. Objects appear here once they have been seen more than twice.</p>';
+    : `<p class="hint">No ${GROUP_LABEL[currentGroup] || 'objects'} to name yet. They appear here once they have been seen more than twice.</p>`;
 }
 
 async function loadObjects() {
@@ -130,6 +152,8 @@ $('detection-save').addEventListener('click', async () => {
       body: JSON.stringify({
         enabled: $('detection-enabled').checked,
         intervalMs: Number($('detection-interval').value),
+        sightingGapMs: Number($('detection-gap').value),
+        alertCooldownMs: Number($('detection-cooldown').value),
       }),
     });
     await loadStatus();
@@ -174,7 +198,15 @@ $('objects').addEventListener('click', (e) => {
   $('sightings').scrollIntoView({ behavior: 'smooth' });
 });
 
-$('kind-filter').addEventListener('change', () => renderObjects(allObjects));
+$('object-tabs').addEventListener('click', (e) => {
+  const tab = e.target.closest('[data-group]');
+  if (!tab) return;
+  currentGroup = tab.dataset.group;
+  for (const button of $('object-tabs').querySelectorAll('[data-group]')) {
+    button.classList.toggle('active', button === tab);
+  }
+  renderObjects(allObjects);
+});
 $('object-search').addEventListener('input', () => renderObjects(allObjects));
 $('sighting-filter').addEventListener('change', loadSightings);
 $('logout-btn').addEventListener('click', async () => {

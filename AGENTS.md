@@ -150,8 +150,14 @@ node or ffmpeg processes you didn't start.
   VPN (Tailscale/WireGuard) or an HTTPS reverse proxy; don't expose the port
   directly.
 - Re-ID uses generic vehicle embeddings, not licence-plate recognition. The
-  similarity threshold (0.80 cosine) and 60s alert cooldown may need tuning
-  for the owner's driveway. People/animals are detected and stored too, but the
-  alert wording was designed around named cars.
+  vehicle similarity threshold is 0.80 cosine; the face threshold is 0.35.
+  A 1-minute flicker guard and a 5-minute alert cooldown are tunable from the
+  Detections page. Sightings stop accumulating while an object remains in view
+  once it has crossed the threshold. The alert wording was designed around
+  named cars.
+- People are only recorded when a face detector finds a face; body shots are
+  discarded. Identity comes from `w600k_mbf.onnx` (ArcFace), so a person in
+  different clothes is still the same record. The face detector is
+  `yolov10n-face.onnx`; both are pinned by SHA-256 in `server/detector.js`.
 - Detection runs on CPU. `onnxruntime-node` install scripts are approved via
   npm's `install-scripts` command; keep that in mind on a fresh machine.

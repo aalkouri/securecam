@@ -10,6 +10,10 @@ export const SNAPSHOT_DIR = path.join(DATA_DIR, 'snapshots');
 // seen more than twice. Records are still kept from the first sighting so
 // re-identification can build up a history.
 export const MIN_SIGHTINGS = 3;
+// Face embeddings (ArcFace) use a much lower cosine threshold than the vehicle
+// ReID model. Same person is typically >0.35; a stranger is around 0.
+export const FACE_THRESHOLD = 0.35;
+const REID_THRESHOLD = 0.80;
 const db = new DatabaseSync(path.join(DATA_DIR, 'securecam.db'));
 
 db.exec(`
@@ -117,7 +121,8 @@ export function findMatch(kind, embedding, fingerprint) {
     let score = null;
     if (embedding && row.embedding) {
       const similarity = cosine(embedding, json(row.embedding, null));
-      if (similarity !== null && similarity >= 0.80) score = similarity;
+      const threshold = kind === 'person' ? FACE_THRESHOLD : REID_THRESHOLD;
+      if (similarity !== null && similarity >= threshold) score = similarity;
     }
     if (score === null && fingerprint && row.fingerprint) {
       const distance = hamming(fingerprint, row.fingerprint);
@@ -225,20 +230,23 @@ export function listSightings({ objectId, cameraId, kind, limit = 60 } = {}) {
   return db.prepare(sql).all(...args, Math.min(Number(limit) || 60, 200)).map(sightingRow);
 }
 
-// Store a sighting, but collapse repeat detections from the same camera while
-// the object is still in view. Alerts are throttled separately.
-export function recordSighting({ object, camera, confidence, bbox, snapshot, embedding, fingerprint, seenAt, sightingGapMs, alertCooldownMs }) {
+// Build the first MIN_SIGHTINGS sightings quickly (so a newly parked car is
+// visible and nameable), then stop recording while it stays in view. A later
+// arrival is a new sighting. The gap guards against brief detection flicker.
+export function recordSighting({ object, camera, confidence, bbox, snapshot, seenAt, sightingGapMs, alertCooldownMs, wasPresent }) {
+  const count = db.prepare('SELECT sightings FROM objects WHERE id = ?').get(object.id).sightings;
+  const buildingUp = count < MIN_SIGHTINGS;
   const last = db.prepare(`SELECT seen_at FROM sightings WHERE object_id = ? AND camera_id = ? ORDER BY seen_at DESC LIMIT 1`)
     .get(object.id, camera.id);
   const recent = last && (Date.parse(seenAt) - Date.parse(last.seen_at)) < sightingGapMs;
-  if (recent) {
+  if (!buildingUp && (wasPresent || recent)) {
     db.prepare('UPDATE objects SET last_seen_at = ? WHERE id = ?').run(seenAt, object.id);
     return { sighting: null, alert: null };
   }
 
-  const result = db.prepare(`INSERT INTO sightings(object_id, camera_id, camera_name, seen_at, confidence, bbox, snapshot, fingerprint)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(object.id, camera.id, camera.name, seenAt, confidence, JSON.stringify(bbox), snapshot, fingerprint || null);
+  const result = db.prepare(`INSERT INTO sightings(object_id, camera_id, camera_name, seen_at, confidence, bbox, snapshot)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(object.id, camera.id, camera.name, seenAt, confidence, JSON.stringify(bbox), snapshot);
   const sightingId = Number(result.lastInsertRowid);
   db.prepare('UPDATE objects SET sightings = sightings + 1, last_seen_at = ? WHERE id = ?').run(seenAt, object.id);
 
