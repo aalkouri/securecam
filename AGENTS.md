@@ -55,6 +55,9 @@ grid, H.265 HD) for testing without hardware.
 - Redact credentials from any ffmpeg/ffprobe error before storing or returning
   it (`redact()` in streams.js).
 - `data/` holds secrets. Never commit it.
+- The admin password minimum is **7 characters** (the owner's decision). It's
+  enforced in `server/index.js` (`POST /api/setup`) and shown in
+  `public/setup.html`; keep the two in step.
 
 ## Gotchas already learned (Windows)
 
@@ -94,10 +97,6 @@ node or ffmpeg processes you didn't start.
 
 ## Open decisions / known issues
 
-- `public/setup.html` asks for **7+ character** passwords, but `server/index.js`
-  (`POST /api/setup`) still requires **10+**. Passwords of 7–9 characters pass
-  the form and are then rejected. The owner needs to choose one number; then
-  update both places.
 - No recording, motion detection, audio, or HTTPS yet. For remote access use a
   VPN (Tailscale/WireGuard) or an HTTPS reverse proxy; don't expose the port
   directly.
