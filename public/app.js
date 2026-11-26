@@ -5,9 +5,17 @@ const tpl = document.getElementById('tile-template');
 const dialog = document.getElementById('cam-dialog');
 const camForm = document.getElementById('cam-form');
 const camError = document.getElementById('cam-error');
+const testResult = document.getElementById('cam-test-result');
 
-const tiles = new Map(); // id -> { el, hls, camera }
+const tiles = new Map(); // id -> { el, player, camera }
 let editingId = null;
+
+// Can this browser decode H.265 (what Reolink 4K main streams use)?
+const HEVC_CODEC = 'video/mp4; codecs="hvc1.1.6.L153.B0"';
+const PLAYS_HEVC = Boolean(
+  (window.MediaSource && MediaSource.isTypeSupported(HEVC_CODEC))
+  || document.createElement('video').canPlayType(HEVC_CODEC),
+);
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -21,6 +29,45 @@ async function api(path, options = {}) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
   return body;
+}
+
+const gridSrc = (id) => `/streams/${id}_grid/index.m3u8`;
+
+// ---------- HLS player ----------
+// Plays `src` in `video`; returns a function that tears the player down.
+function play(video, src) {
+  let hls = null;
+  let retry = null;
+  let destroyed = false;
+
+  const start = () => {
+    if (destroyed) return;
+    if (window.Hls && Hls.isSupported()) {
+      hls = new Hls({ liveSyncDurationCount: 2, manifestLoadingMaxRetry: 6, manifestLoadingRetryDelay: 1000 });
+      hls.loadSource(src);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+        } else {
+          hls.destroy();
+          retry = setTimeout(start, 3000);
+        }
+      });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = src; // Safari / iOS play HLS natively
+    }
+  };
+  start();
+
+  return () => {
+    destroyed = true;
+    clearTimeout(retry);
+    hls?.destroy();
+    video.removeAttribute('src');
+    video.load();
+  };
 }
 
 // ---------- layout ----------
@@ -38,26 +85,6 @@ layoutToggle.addEventListener('click', (e) => {
 setCols(localStorage.getItem('securecam.cols') || 2);
 
 // ---------- tiles ----------
-function attachPlayer(tile) {
-  const video = tile.el.querySelector('video');
-  const src = `/streams/${tile.camera.id}/index.m3u8`;
-  tile.hls?.destroy();
-  tile.hls = null;
-
-  if (window.Hls && Hls.isSupported()) {
-    const hls = new Hls({ liveSyncDurationCount: 2, manifestLoadingMaxRetry: Infinity, manifestLoadingRetryDelay: 2000 });
-    hls.loadSource(src);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.ERROR, (_e, data) => {
-      if (data.fatal && data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-      else if (data.fatal) setTimeout(() => attachPlayer(tile), 3000);
-    });
-    tile.hls = hls;
-  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = src; // Safari / iOS play HLS natively
-  }
-}
-
 function renderStatus(tile) {
   const { camera } = tile;
   const badge = tile.el.querySelector('.badge');
@@ -71,10 +98,13 @@ function renderStatus(tile) {
 
   if (state === 'live') {
     overlay.classList.add('hidden');
-    if (!wasLive) attachPlayer(tile);
+    if (!wasLive) {
+      tile.player?.();
+      tile.player = play(tile.el.querySelector('video'), gridSrc(camera.id));
+    }
   } else {
-    tile.hls?.destroy();
-    tile.hls = null;
+    tile.player?.();
+    tile.player = null;
     overlay.classList.remove('hidden');
     overlay.textContent = state === 'error'
       ? `Can't reach camera — retrying.\n${camera.status.lastError || ''}`
@@ -84,21 +114,27 @@ function renderStatus(tile) {
 
 function createTile(camera) {
   const el = tpl.content.firstElementChild.cloneNode(true);
-  const tile = { el, camera, hls: null };
+  const tile = { el, camera, player: null };
   el.querySelector('.name').textContent = camera.name;
+  el.querySelector('.video-box').addEventListener('click', () => openFocus(tile.camera));
   el.querySelector('.tools').addEventListener('click', async (e) => {
     const action = e.target.closest('button')?.dataset.action;
     if (action === 'edit') openDialog(tile.camera);
-    if (action === 'fullscreen') el.querySelector('.video-box').requestFullscreen?.();
+    if (action === 'open') openFocus(tile.camera);
     if (action === 'restart') {
       el.dataset.state = '';
-      tile.camera = await api(`/api/cameras/${camera.id}/restart`, { method: 'POST' });
+      tile.camera = await api(`/api/cameras/${tile.camera.id}/restart`, { method: 'POST' });
       renderStatus(tile);
     }
   });
   grid.appendChild(el);
   tiles.set(camera.id, tile);
   return tile;
+}
+
+// A camera's stream config changed; the tile must reconnect.
+function configKey(c) {
+  return JSON.stringify([c.type, c.url, c.subUrl, c.host, c.port, c.username]);
 }
 
 async function refresh() {
@@ -113,49 +149,190 @@ async function refresh() {
   for (const camera of cameras) {
     seen.add(camera.id);
     const tile = tiles.get(camera.id) || createTile(camera);
-    const urlChanged = tile.camera.url !== camera.url;
+    if (configKey(tile.camera) !== configKey(camera)) tile.el.dataset.state = '';
     tile.camera = camera;
     tile.el.querySelector('.name').textContent = camera.name;
-    if (urlChanged) tile.el.dataset.state = '';
     renderStatus(tile);
   }
   for (const [id, tile] of tiles) {
     if (!seen.has(id)) {
-      tile.hls?.destroy();
+      tile.player?.();
       tile.el.remove();
       tiles.delete(id);
     }
   }
 }
 
+// ---------- focus (single camera) view ----------
+const focus = {
+  el: document.getElementById('focus'),
+  video: document.querySelector('#focus video'),
+  name: document.getElementById('focus-name'),
+  quality: document.getElementById('focus-quality'),
+  note: document.getElementById('focus-note'),
+  hdBtn: document.getElementById('focus-hd'),
+  camera: null,
+  player: null,
+  token: 0, // bumps on every switch so stale HD responses are ignored
+  wantHd: localStorage.getItem('securecam.hd') !== '0',
+};
+
+function setNote(text) {
+  focus.note.textContent = text || '';
+  focus.note.classList.toggle('hidden', !text);
+}
+
+function focusPlay(src, label) {
+  focus.player?.();
+  focus.player = play(focus.video, src);
+  focus.quality.textContent = label;
+}
+
+async function loadFocusStream() {
+  const { camera } = focus;
+  const token = ++focus.token;
+  // Start with the low-res stream right away so there's never a blank screen.
+  focusPlay(gridSrc(camera.id), 'SD');
+  setNote('');
+  focus.hdBtn.classList.toggle('hidden', !camera.hasHd);
+  focus.hdBtn.textContent = focus.wantHd ? 'Switch to SD' : 'Switch to HD';
+  if (!camera.hasHd || !focus.wantHd) return;
+
+  focus.quality.textContent = 'SD · loading HD…';
+  try {
+    const { src, variant } = await api(`/api/cameras/${camera.id}/hd`, {
+      method: 'POST',
+      body: JSON.stringify({ hevc: PLAYS_HEVC }),
+    });
+    if (token !== focus.token) return;
+    focusPlay(src, variant === 'hd-avc' ? 'HD (converted)' : 'HD');
+  } catch (err) {
+    if (token !== focus.token) return;
+    focus.quality.textContent = 'SD';
+    setNote(`HD unavailable: ${err.message}`);
+  }
+}
+
+function openFocus(camera) {
+  if (!camera.enabled) return;
+  focus.camera = camera;
+  focus.name.textContent = camera.name;
+  focus.el.classList.remove('hidden');
+  document.body.classList.add('no-scroll');
+  loadFocusStream();
+}
+
+function closeFocus() {
+  focus.token += 1;
+  focus.player?.();
+  focus.player = null;
+  focus.camera = null;
+  focus.el.classList.add('hidden');
+  document.body.classList.remove('no-scroll');
+  if (document.fullscreenElement) document.exitFullscreen();
+}
+
+focus.hdBtn.addEventListener('click', () => {
+  focus.wantHd = !focus.wantHd;
+  localStorage.setItem('securecam.hd', focus.wantHd ? '1' : '0');
+  loadFocusStream();
+});
+document.getElementById('focus-close').addEventListener('click', closeFocus);
+document.getElementById('focus-fullscreen').addEventListener('click', () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else focus.el.requestFullscreen?.();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && focus.camera && !document.fullscreenElement && !dialog.open) closeFocus();
+});
+
 // ---------- add / edit dialog ----------
+const field = (id) => document.getElementById(id);
+
+function showTypeFields() {
+  const type = field('cam-type').value;
+  field('fields-reolink').classList.toggle('hidden', type !== 'reolink');
+  field('fields-generic').classList.toggle('hidden', type !== 'generic');
+}
+field('cam-type').addEventListener('change', showTypeFields);
+
 function openDialog(camera) {
   editingId = camera?.id || null;
   camError.textContent = '';
-  document.getElementById('dialog-title').textContent = camera ? 'Edit camera' : 'Add camera';
-  document.getElementById('cam-delete').classList.toggle('hidden', !camera);
-  camForm['cam-name'].value = camera?.name || '';
-  camForm['cam-url'].value = camera?.url || '';
-  camForm['cam-enabled'].checked = camera ? camera.enabled : true;
-  camForm['cam-transcode'].checked = camera?.transcode || false;
+  testResult.classList.add('hidden');
+  field('dialog-title').textContent = camera ? 'Edit camera' : 'Add camera';
+  field('cam-delete').classList.toggle('hidden', !camera);
+  field('cam-name').value = camera?.name || '';
+  field('cam-type').value = camera?.type || 'reolink';
+  field('cam-host').value = camera?.host || '';
+  field('cam-port').value = camera?.port || '';
+  field('cam-username').value = camera?.username || 'admin';
+  field('cam-password').value = '';
+  field('cam-password').placeholder = camera?.type === 'reolink' ? 'Leave blank to keep current' : '';
+  field('cam-url').value = camera?.url || '';
+  field('cam-suburl').value = camera?.subUrl || '';
+  field('cam-enabled').checked = camera ? camera.enabled : true;
+  showTypeFields();
   dialog.showModal();
 }
 
+function formPayload() {
+  return {
+    id: editingId || undefined,
+    name: field('cam-name').value,
+    type: field('cam-type').value,
+    host: field('cam-host').value,
+    port: field('cam-port').value,
+    username: field('cam-username').value,
+    password: field('cam-password').value,
+    url: field('cam-url').value,
+    subUrl: field('cam-suburl').value,
+    enabled: field('cam-enabled').checked,
+  };
+}
+
+const CODEC_NAMES = { h264: 'H.264', hevc: 'H.265', test: 'test pattern' };
+
+function describeStream(label, s) {
+  if (!s) return null;
+  if (s.error) return { ok: false, text: `${label}: ${s.error}` };
+  const size = s.width ? ` ${s.width}×${s.height}` : '';
+  return { ok: true, text: `${label}: ${CODEC_NAMES[s.codec] || s.codec}${size}`, codec: s.codec };
+}
+
+field('cam-test').addEventListener('click', async () => {
+  camError.textContent = '';
+  testResult.className = 'test-result';
+  testResult.textContent = 'Connecting to camera…';
+  const btn = field('cam-test');
+  btn.disabled = true;
+  try {
+    const { grid: g, hd } = await api('/api/cameras/test', { method: 'POST', body: JSON.stringify(formPayload()) });
+    const lines = [describeStream(hd ? 'Grid (low-res)' : 'Stream', g), describeStream('Full view (HD)', hd)].filter(Boolean);
+    const ok = lines.every((l) => l.ok);
+    if (ok && lines.some((l) => l.codec === 'hevc') && !PLAYS_HEVC) {
+      lines.push({ ok: true, text: 'This browser can\'t play H.265, so the server will convert HD to H.264 (uses more CPU).' });
+    }
+    testResult.className = `test-result ${ok ? 'ok' : 'bad'}`;
+    testResult.textContent = `${ok ? '✓ Connected' : '✗ Problem found'}\n${lines.map((l) => l.text).join('\n')}`;
+  } catch (err) {
+    testResult.className = 'test-result bad';
+    testResult.textContent = `✗ ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 camForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const payload = {
-    name: camForm['cam-name'].value,
-    url: camForm['cam-url'].value,
-    enabled: camForm['cam-enabled'].checked,
-    transcode: camForm['cam-transcode'].checked,
-  };
+  camError.textContent = '';
   try {
     if (editingId) {
-      await api(`/api/cameras/${editingId}`, { method: 'PUT', body: JSON.stringify(payload) });
+      await api(`/api/cameras/${editingId}`, { method: 'PUT', body: JSON.stringify(formPayload()) });
       const tile = tiles.get(editingId);
       if (tile) tile.el.dataset.state = '';
     } else {
-      await api('/api/cameras', { method: 'POST', body: JSON.stringify(payload) });
+      await api('/api/cameras', { method: 'POST', body: JSON.stringify(formPayload()) });
     }
     dialog.close();
     refresh();
@@ -164,17 +341,17 @@ camForm.addEventListener('submit', async (e) => {
   }
 });
 
-document.getElementById('cam-delete').addEventListener('click', async () => {
+field('cam-delete').addEventListener('click', async () => {
   if (!editingId || !confirm('Delete this camera?')) return;
   await api(`/api/cameras/${editingId}`, { method: 'DELETE' });
   dialog.close();
   refresh();
 });
 
-document.getElementById('cam-cancel').addEventListener('click', () => dialog.close());
-document.getElementById('add-btn').addEventListener('click', () => openDialog());
-document.getElementById('empty-add-btn').addEventListener('click', () => openDialog());
-document.getElementById('logout-btn').addEventListener('click', async () => {
+field('cam-cancel').addEventListener('click', () => dialog.close());
+field('add-btn').addEventListener('click', () => openDialog());
+field('empty-add-btn').addEventListener('click', () => openDialog());
+field('logout-btn').addEventListener('click', async () => {
   await api('/api/logout', { method: 'POST' });
   location.replace('/login.html');
 });

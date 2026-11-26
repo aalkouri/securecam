@@ -22,17 +22,23 @@ Open http://localhost:8080. The first visit asks you to create the admin account
 
 ## Adding cameras
 
-Click **+ Add camera** and enter the camera's RTSP URL, for example:
+Click **+ Add camera**.
 
-```
-rtsp://username:password@192.168.1.50:554/stream1
-```
+- **Reolink:** choose *Reolink* and enter the camera's IP address, username
+  (usually `admin`) and password. Turn on RTSP first in the Reolink app:
+  Settings → Network → Advanced → Port Settings.
+- **Other brands:** choose *Other* and paste the RTSP URL, e.g.
+  `rtsp://user:pass@192.168.1.50:554/stream1`. If the camera has a low-res
+  stream, add it too and the grid will use it.
 
-The path after the port differs by brand — check the camera's manual or app.
-Use `test://demo` to see a synthetic feed without any hardware.
+Use **Test connection** to check the settings before saving.
 
-If a camera connects but the picture stays black, it is probably sending
-H.265; tick **Transcode to H.264** (uses more CPU).
+The grid shows each camera's low-res stream. Click a camera to open the full
+view, which loads the full-quality stream (4K on Reolink) and stops it again
+30 seconds after you leave. H.265 streams play directly where the browser
+supports it; otherwise the server converts them to H.264, which uses more CPU.
+
+Use `test://demo` (type *Other*) to try the app without any hardware.
 
 ## Configuration
 
@@ -41,6 +47,7 @@ H.265; tick **Transcode to H.264** (uses more CPU).
 | `PORT`         | `8080`      | HTTP port                                         |
 | `HOST`         | `127.0.0.1` | Set `0.0.0.0` to allow other devices on your LAN  |
 | `SECURECAM_DATA` | `./data`  | Where settings, cameras and live segments live    |
+| `FFPROBE_PATH` | next to ffmpeg | Path to the ffprobe binary                   |
 | `FFMPEG_PATH`  | `ffmpeg`    | Path to the ffmpeg binary                         |
 
 `data/` holds your admin password hash and camera credentials. It is gitignored;

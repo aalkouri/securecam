@@ -23,27 +23,85 @@
   <main>
     <div class="empty hidden" id="empty">
       <h2>No cameras yet</h2>
-      <p>Add your first camera using its RTSP URL.<br>
-        No hardware yet? Use <code>test://demo</code> to see a sample feed.</p>
+      <p>Add your first camera. For Reolink cameras you only need the IP address and login.<br>
+        No hardware yet? Choose <em>Other</em> and use <code>test://demo</code> to see a sample feed.</p>
       <button class="primary" id="empty-add-btn">+ Add camera</button>
     </div>
     <div class="grid" id="grid"></div>
   </main>
 
+  <!-- Full-screen single-camera view -->
+  <div class="focus hidden" id="focus" role="dialog" aria-modal="true" aria-labelledby="focus-name">
+    <div class="focus-bar">
+      <span class="name" id="focus-name"></span>
+      <div class="tools">
+        <span class="quality" id="focus-quality"></span>
+        <button id="focus-hd" title="Switch quality">HD</button>
+        <button id="focus-fullscreen" title="Fullscreen">⛶</button>
+        <button id="focus-close" title="Close (Esc)">✕</button>
+      </div>
+    </div>
+    <div class="focus-video">
+      <video muted playsinline autoplay></video>
+      <div class="focus-note hidden" id="focus-note"></div>
+    </div>
+  </div>
+
   <dialog id="cam-dialog">
     <form method="dialog" id="cam-form">
       <h2 id="dialog-title">Add camera</h2>
+
       <label for="cam-name">Name</label>
       <input type="text" id="cam-name" placeholder="Front door" maxlength="64" required>
-      <label for="cam-url">Stream URL</label>
-      <input type="text" id="cam-url" placeholder="rtsp://user:pass@192.168.1.50:554/stream1" required>
-      <div class="hint">Check your camera's manual for its RTSP path. Use <code>test://demo</code> for a sample feed.</div>
+
+      <label for="cam-type">Camera type</label>
+      <select id="cam-type">
+        <option value="reolink">Reolink</option>
+        <option value="generic">Other (enter RTSP URL)</option>
+      </select>
+
+      <div id="fields-reolink">
+        <div class="row-2">
+          <div>
+            <label for="cam-host">IP address</label>
+            <input type="text" id="cam-host" placeholder="192.168.1.50" autocomplete="off">
+          </div>
+          <div>
+            <label for="cam-port">RTSP port</label>
+            <input type="text" id="cam-port" inputmode="numeric" placeholder="554">
+          </div>
+        </div>
+        <div class="row-2">
+          <div>
+            <label for="cam-username">Username</label>
+            <input type="text" id="cam-username" placeholder="admin" autocomplete="off">
+          </div>
+          <div>
+            <label for="cam-password">Password</label>
+            <input type="password" id="cam-password" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="hint">Turn on RTSP first in the Reolink app: Settings → Network → Advanced → Port Settings.
+          Find the IP address in the app under Device Info or in your router's device list.</div>
+      </div>
+
+      <div id="fields-generic" class="hidden">
+        <label for="cam-url">Stream URL</label>
+        <input type="text" id="cam-url" placeholder="rtsp://user:pass@192.168.1.50:554/stream1">
+        <label for="cam-suburl">Low-res stream URL (optional)</label>
+        <input type="text" id="cam-suburl" placeholder="rtsp://user:pass@192.168.1.50:554/stream2">
+        <div class="hint">If you add a low-res URL, the grid uses it and the full URL loads when you open the camera.
+          Use <code>test://demo</code> for a sample feed.</div>
+      </div>
+
       <label class="check"><input type="checkbox" id="cam-enabled" checked> Enabled</label>
-      <label class="check"><input type="checkbox" id="cam-transcode"> Transcode to H.264 (use if the camera sends H.265 and video stays black)</label>
+
+      <div class="test-result hidden" id="cam-test-result" role="status"></div>
       <div class="error" id="cam-error" role="alert"></div>
       <div class="row">
         <button type="button" class="danger" id="cam-delete">Delete</button>
         <div class="right">
+          <button type="button" id="cam-test">Test connection</button>
           <button type="button" id="cam-cancel">Cancel</button>
           <button type="submit" class="primary">Save</button>
         </div>
@@ -53,7 +111,7 @@
 
   <template id="tile-template">
     <div class="tile">
-      <div class="video-box">
+      <div class="video-box" title="Open camera">
         <video muted playsinline autoplay></video>
         <div class="overlay"></div>
       </div>
@@ -61,7 +119,7 @@
         <span class="name"></span>
         <div class="tools">
           <span class="badge"></span>
-          <button class="icon" data-action="fullscreen" title="Fullscreen">⛶</button>
+          <button class="icon" data-action="open" title="Open full view">⛶</button>
           <button class="icon" data-action="restart" title="Restart stream">↻</button>
           <button class="icon" data-action="edit" title="Edit">✎</button>
         </div>

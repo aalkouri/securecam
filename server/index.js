@@ -8,7 +8,8 @@ import {
   isSetupComplete, createAdmin, checkLogin, requireAuth,
   isLockedOut, recordFailure, clearFailures,
 } from './auth.js';
-import { streams, STREAM_DIR } from './streams.js';
+import { streams, STREAM_DIR, probe } from './streams.js';
+import { validateCamera, publicCamera, gridUrl, hdUrl } from './cameras.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 8080);
@@ -50,8 +51,8 @@ app.post('/api/setup', (req, res) => {
   if (!username || typeof username !== 'string' || username.length > 64) {
     return res.status(400).json({ error: 'Username is required' });
   }
-  if (!password || typeof password !== 'string' || password.length < 10) {
-    return res.status(400).json({ error: 'Password must be at least 10 characters' });
+  if (!password || typeof password !== 'string' || password.length < 7) {
+    return res.status(400).json({ error: 'Password must be at least 7 characters' });
   }
   createAdmin(username.trim(), password);
   req.session.regenerate(() => {
@@ -89,51 +90,40 @@ app.use((req, res, next) => {
 app.use(requireAuth);
 
 app.use('/vendor/hls.js', express.static(path.join(ROOT, 'node_modules/hls.js/dist')));
-app.use('/streams', express.static(STREAM_DIR, {
+// Each fetch marks the stream as watched so idle HD streams can be stopped.
+app.use('/streams', (req, res, next) => {
+  streams.touch(req.path.split('/')[1]);
+  next();
+}, express.static(STREAM_DIR, {
   setHeaders: (res) => res.set('Cache-Control', 'no-store'),
 }));
 app.use(express.static(publicDir));
 
 app.get('/api/me', (req, res) => res.json({ user: req.session.user }));
 
-const ALLOWED_SCHEMES = /^(rtsp|rtsps|http|https|test):\/\//i;
+function viewCamera(cam) {
+  return publicCamera(cam, { status: streams.status(cam.id, 'grid') });
+}
 
-// Never send camera passwords back to the browser.
-function publicCamera(cam) {
-  let displayUrl = cam.url;
+function findCamera(id) {
+  return getCameras().find((c) => c.id === id);
+}
+
+app.get('/api/cameras', (req, res) => res.json(getCameras().map(viewCamera)));
+
+// Check a camera's settings before saving: connects and reports what it sends.
+app.post('/api/cameras/test', async (req, res) => {
+  const body = req.body || {};
+  let cam;
   try {
-    const u = new URL(cam.url);
-    if (u.password) u.password = '****';
-    displayUrl = u.toString();
-  } catch { /* leave as-is */ }
-  return {
-    id: cam.id,
-    name: cam.name,
-    url: displayUrl,
-    enabled: cam.enabled,
-    transcode: Boolean(cam.transcode),
-    status: streams.status(cam.id),
-  };
-}
-
-function validateCamera(body, existing) {
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  if (!name || name.length > 64) throw new Error('Name is required (max 64 characters)');
-  let url = typeof body.url === 'string' ? body.url.trim() : '';
-  if (!ALLOWED_SCHEMES.test(url)) throw new Error('URL must start with rtsp://, rtsps://, http(s):// or test://');
-  // Keep the stored password if the user left the masked placeholder in place.
-  if (existing && url.includes(':****@')) {
-    try {
-      const old = new URL(existing.url);
-      const next = new URL(url);
-      if (next.password === '****') next.password = old.password;
-      url = next.toString();
-    } catch { /* fall through */ }
+    cam = validateCamera(body, body.id ? findCamera(body.id) : undefined);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
   }
-  return { name, url, enabled: body.enabled !== false, transcode: Boolean(body.transcode) };
-}
-
-app.get('/api/cameras', (req, res) => res.json(getCameras().map(publicCamera)));
+  const check = (url) => (url ? probe(url).catch((err) => ({ error: err.message })) : null);
+  const [grid, hd] = await Promise.all([check(gridUrl(cam)), check(hdUrl(cam))]);
+  res.json({ grid, hd });
+});
 
 app.post('/api/cameras', (req, res) => {
   try {
@@ -141,8 +131,8 @@ app.post('/api/cameras', (req, res) => {
     const cameras = getCameras();
     cameras.push(cam);
     saveCameras(cameras);
-    if (cam.enabled) streams.start(cam);
-    res.status(201).json(publicCamera(cam));
+    if (cam.enabled) streams.startCamera(cam);
+    res.status(201).json(viewCamera(cam));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -156,8 +146,8 @@ app.put('/api/cameras/:id', (req, res) => {
     const cam = { id: cameras[idx].id, ...validateCamera(req.body || {}, cameras[idx]) };
     cameras[idx] = cam;
     saveCameras(cameras);
-    if (cam.enabled) streams.start(cam); else streams.stop(cam.id);
-    res.json(publicCamera(cam));
+    if (cam.enabled) streams.startCamera(cam); else streams.stopCamera(cam.id);
+    res.json(viewCamera(cam));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -167,20 +157,35 @@ app.delete('/api/cameras/:id', (req, res) => {
   const cameras = getCameras();
   const next = cameras.filter((c) => c.id !== req.params.id);
   if (next.length === cameras.length) return res.status(404).json({ error: 'Camera not found' });
-  streams.stop(req.params.id);
+  streams.stopCamera(req.params.id);
   saveCameras(next);
   res.json({ ok: true });
 });
 
 app.post('/api/cameras/:id/restart', (req, res) => {
-  const cam = getCameras().find((c) => c.id === req.params.id);
+  const cam = findCamera(req.params.id);
   if (!cam) return res.status(404).json({ error: 'Camera not found' });
-  streams.start(cam);
-  res.json(publicCamera(cam));
+  streams.startCamera(cam);
+  res.json(viewCamera(cam));
+});
+
+// Start (or join) the full-quality stream for a viewer and wait until it's playable.
+app.post('/api/cameras/:id/hd', async (req, res) => {
+  const cam = findCamera(req.params.id);
+  if (!cam) return res.status(404).json({ error: 'Camera not found' });
+  if (!cam.enabled) return res.status(409).json({ error: 'Camera is disabled' });
+  const variant = await streams.hdVariantFor(cam, Boolean(req.body?.hevc));
+  if (!variant) return res.status(404).json({ error: 'This camera has no separate HD stream' });
+  const { key } = streams.ensure(cam, variant);
+  if (await streams.waitLive(key, 20_000)) {
+    return res.json({ src: `/streams/${key}/index.m3u8`, variant });
+  }
+  const { lastError } = streams.status(cam.id, variant);
+  res.status(504).json({ error: lastError || 'HD stream took too long to start' });
 });
 
 // ---------- boot ----------
-for (const cam of getCameras()) if (cam.enabled) streams.start(cam);
+for (const cam of getCameras()) if (cam.enabled) streams.startCamera(cam);
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`SecureCam running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
