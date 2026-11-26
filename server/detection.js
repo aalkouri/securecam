@@ -8,9 +8,10 @@ import { getCameras } from './store.js';
 import { gridUrl, isClip, clipPath } from './cameras.js';
 import { detect, loadModels, modelStatus } from './detector.js';
 import {
-  SNAPSHOT_DIR, MIN_SIGHTINGS, getSetting, setSetting, findMatch, createObject,
-  updateObjectSignature, recordSighting, counts,
+  SNAPSHOT_DIR, MIN_SIGHTINGS, getSetting, setSetting, findMatch, findReviewCandidate,
+  createObject, updateObjectSignature, recordSighting, setAlertClip, counts,
 } from './database.js';
+import { ALERT_CLIP_DIR, recordAlertClip } from './clips.js';
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const CAPTURE_TIMEOUT_MS = 15_000;
@@ -178,9 +179,14 @@ class DetectionLoop {
   async save(camera, item, gap, cooldown, previouslyPresent, nowPresent) {
     const match = findMatch(item.kind, item.embedding, item.fingerprint);
     const seenAt = new Date().toISOString();
+    // A weak face match to an already-named person becomes a fresh object so it
+    // appears on the Detections page again instead of being silently absorbed.
+    const candidate = match ? null : findReviewCandidate(item.kind, item.embedding, item.fingerprint);
     const object = match
       ? match.object
-      : createObject(item.kind, item.embedding, item.fingerprint);
+      : createObject(item.kind, item.embedding, item.fingerprint, candidate
+        ? { objectId: candidate.object.id, score: candidate.score }
+        : null);
     if (match) updateObjectSignature(object.id, item.embedding, item.fingerprint, seenAt);
     const key = `${camera.id}:${object.id}`;
     const wasPresent = previouslyPresent.has(key);
@@ -201,6 +207,12 @@ class DetectionLoop {
     if (!result.sighting) {
       // No sighting was kept, so don't leave an unused snapshot behind.
       fs.unlinkSync(path.join(SNAPSHOT_DIR, snapshot));
+    }
+    if (result.alert) {
+      const clip = `${result.alert.id}.mp4`;
+      recordAlertClip(camera, path.join(ALERT_CLIP_DIR, clip))
+        .then(() => setAlertClip(result.alert.id, clip))
+        .catch((err) => console.warn(`Could not save clip for alert ${result.alert.id}: ${err.message}`));
     }
   }
 }

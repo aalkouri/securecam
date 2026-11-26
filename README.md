@@ -59,9 +59,10 @@ Every enabled camera is sampled for a frame every few seconds. Detection runs
 locally with ONNX Runtime — nothing is sent to a cloud service. It recognises
 cars, trucks, buses, motorcycles, bicycles, people, cats and dogs. Known
 objects are given a permanent ID such as `CAR-0001`; click **Detection** in the
-header to rename one, browse its sightings, and see alerts like
-*"Blue truck showed up in camera Driveway"*. New alerts also pop up on the
-camera dashboard.
+header to rename one and browse its sightings. Alerts live on the camera
+dashboard under the **Alerts** button, with messages like
+*"Blue truck showed up in camera Driveway"*. Clicking an alert plays the saved
+five-second clip from that camera.
 
 To keep single glimpses from becoming noise, an object is only shown and only
 raises an alert once it has been seen **more than twice** (3 sightings). It is
@@ -75,7 +76,10 @@ clothing. Vehicles keep their body snapshot. The Detections page has separate
 work through one group at a time. The page loads once when opened — it never
 refreshes itself while you are typing. Type a name and press **Confirm** to save
 it; **View Sightings** jumps to that object's history, and the **×** on the photo
-removes the object (click it twice to confirm). Reload to see anything new.
+removes the object (click it twice to confirm). Once an object is named it leaves
+this list: confident matches are handled automatically, while new face images
+that are 40% or less sure of the same person come back as a possible match to
+review. Reload to see anything new.
 
 Repeats are collapsed: an object is recorded just three times so it can be
 named, then no more rows are added while it stays in view. Leaving and returning
@@ -83,6 +87,12 @@ is a new sighting, and alerts are throttled to at most one every **5 minutes**.
 A 1-minute flicker guard stops brief detection dropouts from counting as
 re-arrivals. Both delays, the scan interval, and the on/off switch can be
 changed from the Detections page.
+
+Each enabled camera is always recording a rolling **10-minute low-res buffer**.
+When an alert happens, SecureCam saves a **five-second clip from that camera's
+full-quality stream** and links it to the alert. The buffer uses roughly 0.5–1
+Mbps per camera; with 2–4 cameras the ten-minute window stays well under 1 GB.
+The 4K alert clips are typically 2–15 MB each depending on the camera bitrate.
 
 On first run the app downloads four small models (~36 MB total) into
 `data/models/` and verifies their checksums. Snapshots and the SQLite database

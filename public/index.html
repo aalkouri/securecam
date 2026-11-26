@@ -10,6 +10,18 @@
   <header>
     <div class="brand"><span class="brand-dot"></span>SecureCam</div>
     <div class="actions">
+      <div class="alerts-wrap" id="alerts-wrap">
+        <button id="alerts-btn" aria-expanded="false" aria-controls="alerts-dropdown">
+          Alerts <span class="alert-count hidden" id="alert-count">0</span>
+        </button>
+        <div id="alerts-dropdown" class="alerts-dropdown hidden">
+          <div class="alerts-dropdown-head">
+            <strong>Alerts</strong>
+            <button class="icon" id="ack-all-alerts">Acknowledge all</button>
+          </div>
+          <div id="alerts-list" class="alert-list"></div>
+        </div>
+      </div>
       <a class="detection-button" href="/detections.html" title="Name and review detected objects">
         Detection <span class="detection-count hidden" id="detection-count">0</span>
       </a>
@@ -34,6 +46,19 @@
   </main>
 
   <div id="alerts" class="toasts" aria-live="polite"></div>
+
+  <!-- Five-second clip from an alert -->
+  <div id="clip-modal" class="clip-modal hidden" role="dialog" aria-modal="true" aria-labelledby="clip-title">
+    <div class="clip-panel">
+      <div class="clip-bar">
+        <span id="clip-title"></span>
+        <button class="icon" id="clip-close" title="Close (Esc)">✕</button>
+      </div>
+      <video id="clip-video" controls playsinline></video>
+      <img id="clip-still" class="clip-still hidden" alt="Alert snapshot">
+      <p class="hint" id="clip-note"></p>
+    </div>
+  </div>
 
   <!-- Full-screen single-camera view -->
   <div class="focus hidden" id="focus" role="dialog" aria-modal="true" aria-labelledby="focus-name">

@@ -31,6 +31,7 @@ const GROUPS = {
 };
 const GROUP_LABEL = { person: 'people', vehicles: 'vehicles', animals: 'animals' };
 let allObjects = [];
+let filterObjects = [];
 let currentGroup = '';
 let pendingClose = null;
 let closeTimer = null;
@@ -62,32 +63,11 @@ function renderStatus(s) {
   $('detection-interval').value = String(s.intervalMs || 4000);
   selectValue('detection-gap', s.sightingGapMs || 60_000);
   selectValue('detection-cooldown', s.alertCooldownMs || 300_000);
-  $('objects-note').textContent = `An object appears here only after it has been seen more than ${(s.minSightings || 3) - 1} times. People are saved as face shots and matched by face, not clothing. Type a name and press Confirm to save it. Reload the page to see anything new.`;
+  $('objects-note').textContent = `An object appears here only after it has been seen more than ${(s.minSightings || 3) - 1} times. Once you confirm a name, it leaves this list and confident matches are handled automatically. New images that are 40% or less sure of the same person come back here for review. Reload the page to see anything new.`;
 }
 
 async function loadStatus() {
   renderStatus(await api('/api/detection/status'));
-}
-
-function renderAlerts(alerts) {
-  $('alerts-list').innerHTML = alerts.length
-    ? alerts.map((a) => `
-        <div class="alert-item ${a.ack ? 'acked' : ''}">
-          ${allObjects.find((o) => o.id === a.objectId)?.latestSnapshot
-            ? `<img src="${snapshot(allObjects.find((o) => o.id === a.objectId).latestSnapshot)}" alt="" class="alert-thumb">`
-            : ''}
-          <div class="alert-text">
-            <strong>${esc(a.message)}</strong>
-            <span class="hint">${esc(a.identifier)} · ${when(a.createdAt)}</span>
-          </div>
-          ${a.ack ? '<span class="hint">Acknowledged</span>'
-            : `<button class="icon" data-ack="${a.id}" title="Acknowledge">✓</button>`}
-        </div>`).join('')
-    : '<p class="hint">No alerts yet.</p>';
-}
-
-async function loadAlerts() {
-  renderAlerts(await api('/api/alerts?limit=40'));
 }
 
 function renderObjects(objects) {
@@ -109,6 +89,7 @@ function renderObjects(objects) {
               <input type="text" class="object-name" data-id="${esc(o.id)}" value="${esc(o.name)}" maxlength="64" aria-label="Name">
               <span class="identifier">${esc(o.identifier)}</span>
             </div>
+            ${o.candidateName ? `<div class="hint">Possible match for ${esc(o.candidateName)} · ${pct(o.candidateScore)}</div>` : ''}
             <div class="card-actions">
               <button type="button" class="card-btn" data-confirm="${esc(o.id)}">Confirm</button>
               <button type="button" class="card-btn" data-view="${esc(o.id)}">View Sightings</button>
@@ -123,12 +104,15 @@ function renderSightingFilter() {
   const select = $('sighting-filter');
   const selected = select.value;
   select.innerHTML = '<option value="">All objects</option>'
-    + allObjects.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(o.identifier)}</option>`).join('');
-  select.value = selected && allObjects.some((o) => o.id === selected) ? selected : '';
+    + filterObjects.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(o.identifier)}</option>`).join('');
+  select.value = selected && filterObjects.some((o) => o.id === selected) ? selected : '';
 }
 
 async function loadObjects() {
-  allObjects = await api('/api/objects');
+  [allObjects, filterObjects] = await Promise.all([
+    api('/api/objects'),
+    api('/api/objects?all=1'),
+  ]);
   renderObjects(allObjects);
   renderSightingFilter();
 }
@@ -149,7 +133,7 @@ async function loadSightings() {
 // Load once. Nothing on this page polls; reload to pick up new detections.
 async function refresh() {
   try {
-    await Promise.all([loadStatus(), loadAlerts(), loadObjects(), loadSightings()]);
+    await Promise.all([loadStatus(), loadObjects(), loadSightings()]);
   } catch {
     // api() handles authentication failures.
   }
@@ -172,18 +156,6 @@ $('detection-save').addEventListener('click', async () => {
   }
 });
 
-$('ack-all').addEventListener('click', async () => {
-  await api('/api/alerts/ack', { method: 'POST', body: JSON.stringify({ all: true }) });
-  loadAlerts();
-});
-
-$('alerts-list').addEventListener('click', async (e) => {
-  const id = e.target.closest('[data-ack]')?.dataset.ack;
-  if (!id) return;
-  await api('/api/alerts/ack', { method: 'POST', body: JSON.stringify({ ids: [Number(id)] }) });
-  loadAlerts();
-});
-
 $('objects').addEventListener('click', async (e) => {
   const confirmButton = e.target.closest('[data-confirm]');
   if (confirmButton) {
@@ -195,15 +167,13 @@ $('objects').addEventListener('click', async (e) => {
       });
       const object = allObjects.find((o) => o.id === updated.id);
       if (object) object.name = updated.name;
-      input.value = updated.name;
-      confirmButton.textContent = 'Saved';
-      confirmButton.classList.add('saved');
-      setTimeout(() => {
-        if (!confirmButton.isConnected) return;
-        confirmButton.textContent = 'Confirm';
-        confirmButton.classList.remove('saved');
-      }, 1500);
+      const named = filterObjects.find((o) => o.id === updated.id);
+      if (named) named.name = updated.name;
+      // Named objects are done; confident matches no longer need a name card.
+      allObjects = allObjects.filter((o) => o.id !== updated.id);
+      renderObjects(allObjects);
       renderSightingFilter();
+      loadSightings();
     } catch (err) {
       console.error(err);
       input.value = allObjects.find((o) => o.id === confirmButton.dataset.confirm)?.name || input.value;
@@ -242,11 +212,11 @@ $('objects').addEventListener('click', async (e) => {
     try {
       await api(`/api/objects/${id}`, { method: 'DELETE' });
       allObjects = allObjects.filter((o) => o.id !== id);
+      filterObjects = filterObjects.filter((o) => o.id !== id);
       if ($('sighting-filter').value === id) $('sighting-filter').value = '';
       renderObjects(allObjects);
       renderSightingFilter();
       loadSightings();
-      loadAlerts();
     } catch (err) {
       console.error(err);
     }

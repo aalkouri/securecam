@@ -17,6 +17,10 @@ const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const FFPROBE = process.env.FFPROBE_PATH || FFMPEG.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
 const HD_IDLE_MS = 30_000;
 const PROBE_TIMEOUT_MS = 12_000;
+// The grid stream is the always-on rolling buffer. Keep ten minutes of 2-second
+// segments so an alert can reach back a little before it happened.
+const GRID_BUFFER_SECONDS = 600;
+const HLS_SECONDS_PER_SEGMENT = 2;
 
 export const VARIANTS = ['grid', 'hd', 'hd-avc'];
 
@@ -242,8 +246,8 @@ class StreamManager {
       // the audio track optional, and AAC plays everywhere whatever the camera sends.
       ...(variant === 'grid' ? ['-an'] : ['-map', '0:v:0', '-map', '0:a:0?', '-c:a', 'aac', '-b:a', '96k', '-ac', '2']),
       '-f', 'hls',
-      '-hls_time', '2',
-      '-hls_list_size', '6',
+      '-hls_time', String(HLS_SECONDS_PER_SEGMENT),
+      '-hls_list_size', String(variant === 'grid' ? GRID_BUFFER_SECONDS / HLS_SECONDS_PER_SEGMENT : 6),
       '-hls_flags', 'delete_segments+omit_endlist+independent_segments',
       // fMP4 segments are required for H.265 and work fine for H.264.
       '-hls_segment_type', 'fmp4',

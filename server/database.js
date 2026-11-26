@@ -13,6 +13,10 @@ export const MIN_SIGHTINGS = 3;
 // Face embeddings (ArcFace) use a much lower cosine threshold than the vehicle
 // ReID model. Same person is typically >0.35; a stranger is around 0.
 export const FACE_THRESHOLD = 0.35;
+// A named person is only treated as the same person above 40% similarity.
+// Anything at or below that is shown again as a possible new person to name.
+export const REVIEW_MAX_SCORE = 0.40;
+const REVIEW_MIN_SCORE = 0.05;
 const REID_THRESHOLD = 0.80;
 const db = new DatabaseSync(path.join(DATA_DIR, 'securecam.db'));
 
@@ -66,6 +70,29 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS objects_kind ON objects(kind);
 `);
 
+// Older databases predate these columns. Add them in place so existing IDs,
+// sightings and alerts are preserved.
+function ensureColumn(table, name, definition) {
+  const names = db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name);
+  if (!names.includes(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+}
+ensureColumn('objects', 'named', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('objects', 'candidate_of', 'TEXT');
+ensureColumn('objects', 'candidate_score', 'REAL');
+ensureColumn('alerts', 'clip', 'TEXT');
+
+const PREFIX = { car: 'CAR', truck: 'TRK', bus: 'BUS', person: 'PER', bicycle: 'BIK', motorcycle: 'MOT', cat: 'CAT', dog: 'DOG' };
+const LABEL = { car: 'Car', truck: 'Truck', bus: 'Bus', person: 'Person', bicycle: 'Bicycle', motorcycle: 'Motorcycle', cat: 'Cat', dog: 'Dog' };
+
+// Anything not using the automatic "Person 1" style name was named by the user,
+// so hide it from the naming list on upgrade too.
+for (const row of db.prepare('SELECT id, kind, identifier, name FROM objects WHERE named = 0').all()) {
+  const n = Number(String(row.identifier).split('-')[1]);
+  if (row.name !== `${LABEL[row.kind] || row.kind} ${n}`) {
+    db.prepare('UPDATE objects SET named = 1 WHERE id = ?').run(row.id);
+  }
+}
+
 const json = (value, fallback) => {
   try { return JSON.parse(value); } catch { return fallback; }
 };
@@ -87,6 +114,10 @@ function objectRow(row) {
     identifier: row.identifier,
     kind: row.kind,
     name: row.name,
+    named: Boolean(row.named),
+    candidateOf: row.candidate_of || null,
+    candidateScore: row.candidate_score ?? null,
+    candidateName: row.candidate_name || null,
     firstSeen: row.created_at,
     lastSeen: row.last_seen_at,
     sightings: row.sightings,
@@ -97,38 +128,70 @@ function objectRow(row) {
 }
 
 const LATEST = `o.*,
+  (SELECT name FROM objects p WHERE p.id = o.candidate_of) AS candidate_name,
   (SELECT s.snapshot FROM sightings s WHERE s.object_id = o.id ORDER BY s.seen_at DESC LIMIT 1) AS latest_snapshot,
   (SELECT s.camera_name FROM sightings s WHERE s.object_id = o.id ORDER BY s.seen_at DESC LIMIT 1) AS latest_camera,
   (SELECT s.confidence FROM sightings s WHERE s.object_id = o.id ORDER BY s.seen_at DESC LIMIT 1) AS latest_confidence`;
 
-export function listObjects(kind) {
+// Named objects have already been dealt with. They stay in the database and in
+// alerts, but only still-unnamed objects (including low-confidence possible
+// matches to a named person) appear here for review.
+export function listObjects(kind, all = false) {
+  const named = all ? '' : 'AND o.named = 0';
   const rows = kind
-    ? db.prepare(`SELECT ${LATEST} FROM objects o WHERE kind = ? AND o.sightings >= ? ORDER BY last_seen_at DESC, created_at DESC`).all(kind, MIN_SIGHTINGS)
-    : db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.sightings >= ? ORDER BY last_seen_at DESC, created_at DESC`).all(MIN_SIGHTINGS);
+    ? db.prepare(`SELECT ${LATEST} FROM objects o WHERE kind = ? ${named} AND o.sightings >= ? ORDER BY last_seen_at DESC, created_at DESC`).all(kind, MIN_SIGHTINGS)
+    : db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.sightings >= ? ${named} ORDER BY last_seen_at DESC, created_at DESC`).all(MIN_SIGHTINGS);
   return rows.map(objectRow);
 }
 
 export function getObject(id) {
-  return objectRow(db.prepare('SELECT * FROM objects WHERE id = ?').get(id));
+  return objectRow(db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.id = ?`).get(id));
 }
 
-// Pick the closest known object of the same kind. ReID embeddings are primary;
-// a perceptual hash is a fallback for when the ReID model isn't available.
+// Score a stored object against a new detection. ReID embeddings are primary;
+// a perceptual hash is the fallback when an embedding isn't available.
+function scoreRow(row, kind, embedding, fingerprint) {
+  if (embedding && row.embedding) {
+    const similarity = cosine(embedding, json(row.embedding, null));
+    if (similarity !== null) return similarity;
+  }
+  if (fingerprint && row.fingerprint) {
+    const distance = hamming(fingerprint, row.fingerprint);
+    if (distance <= 12) return 1 - distance / 64;
+  }
+  return null;
+}
+
+function thresholdFor(row, kind) {
+  // Once a person has a name, only a clear face match is silently folded into
+  // that record. A 40%-or-less match has to appear again for review.
+  if (row.named && kind === 'person') return REVIEW_MAX_SCORE;
+  return kind === 'person' ? FACE_THRESHOLD : REID_THRESHOLD;
+}
+
+// Pick the closest known object that is confident enough to absorb this image.
 export function findMatch(kind, embedding, fingerprint) {
   const candidates = db.prepare('SELECT * FROM objects WHERE kind = ? AND (embedding IS NOT NULL OR fingerprint IS NOT NULL)').all(kind);
   let best = null;
   for (const row of candidates) {
-    let score = null;
-    if (embedding && row.embedding) {
-      const similarity = cosine(embedding, json(row.embedding, null));
-      const threshold = kind === 'person' ? FACE_THRESHOLD : REID_THRESHOLD;
-      if (similarity !== null && similarity >= threshold) score = similarity;
-    }
-    if (score === null && fingerprint && row.fingerprint) {
-      const distance = hamming(fingerprint, row.fingerprint);
-      if (distance <= 12) score = 1 - distance / 64;
-    }
-    if (score !== null && (!best || score > best.score)) best = { object: objectRow(row), score };
+    const score = scoreRow(row, kind, embedding, fingerprint);
+    if (score === null || score <= thresholdFor(row, kind)) continue;
+    if (!best || score > best.score) best = { object: objectRow(row), score };
+  }
+  return best;
+}
+
+// If the closest known object is already named but only weakly similar, keep
+// this image as a new, unconfirmed candidate linked to that name.
+export function findReviewCandidate(kind, embedding, fingerprint) {
+  if (kind !== 'person') return null;
+  const candidates = db.prepare(`SELECT * FROM objects
+    WHERE kind = ? AND named = 1 AND embedding IS NOT NULL`).all(kind);
+  let best = null;
+  for (const row of candidates) {
+    const score = scoreRow(row, kind, embedding, fingerprint);
+    if (score === null || score <= REVIEW_MIN_SCORE || score > REVIEW_MAX_SCORE) continue;
+    if (!best || score > best.score) best = { object: objectRow(row), score };
   }
   return best;
 }
@@ -157,14 +220,11 @@ function hamming(a, b) {
   return distance;
 }
 
-const PREFIX = { car: 'CAR', truck: 'TRK', bus: 'BUS', person: 'PER', bicycle: 'BIK', motorcycle: 'MOT', cat: 'CAT', dog: 'DOG' };
-const LABEL = { car: 'Car', truck: 'Truck', bus: 'Bus', person: 'Person', bicycle: 'Bicycle', motorcycle: 'Motorcycle', cat: 'Cat', dog: 'Dog' };
-
 export function kindLabel(kind) {
   return LABEL[kind] || kind;
 }
 
-export function createObject(kind, embedding, fingerprint) {
+export function createObject(kind, embedding, fingerprint, candidate = null) {
   const id = crypto.randomUUID();
   const prefix = PREFIX[kind] || 'OBJ';
   let n = db.prepare('SELECT COUNT(*) AS n FROM objects WHERE kind = ?').get(kind).n + 1;
@@ -177,17 +237,21 @@ export function createObject(kind, embedding, fingerprint) {
   const name = `${kindLabel(kind)} ${n}`;
   // Start at 0: recordSighting() increments this, so the count always matches
   // the number of sighting rows and the "seen more than twice" gate is exact.
-  db.prepare(`INSERT INTO objects(id, identifier, kind, name, created_at, last_seen_at, sightings, embedding, fingerprint)
-              VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`)
+  db.prepare(`INSERT INTO objects(id, identifier, kind, name, created_at, last_seen_at, sightings,
+              embedding, fingerprint, candidate_of, candidate_score)
+              VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`)
     .run(id, identifier, kind, name, now, now,
-      embedding ? JSON.stringify(embedding) : null, fingerprint || null);
+      embedding ? JSON.stringify(embedding) : null, fingerprint || null,
+      candidate?.objectId || null, candidate?.score ?? null);
   return getObject(id);
 }
 
 export function renameObject(id, name) {
   const clean = typeof name === 'string' ? name.trim().slice(0, 64) : '';
   if (!clean) throw new Error('Name is required');
-  const result = db.prepare('UPDATE objects SET name = ? WHERE id = ?').run(clean, id);
+  // A named object is done: confident sightings still alert, but its card
+  // leaves the naming page unless a low-confidence possible match appears.
+  const result = db.prepare('UPDATE objects SET name = ?, named = 1 WHERE id = ?').run(clean, id);
   if (!result.changes) throw new Error('Object not found');
   return getObject(id);
 }
@@ -197,9 +261,11 @@ export function renameObject(id, name) {
 export function deleteObject(id) {
   const snapshots = db.prepare('SELECT snapshot FROM sightings WHERE object_id = ?').all(id)
     .map((row) => row.snapshot);
+  const clips = db.prepare('SELECT clip FROM alerts WHERE object_id = ? AND clip IS NOT NULL').all(id)
+    .map((row) => row.clip);
   const result = db.prepare('DELETE FROM objects WHERE id = ?').run(id);
   if (!result.changes) throw new Error('Object not found');
-  return snapshots;
+  return { snapshots, clips };
 }
 
 export function updateObjectSignature(id, embedding, fingerprint, seenAt) {
@@ -268,31 +334,54 @@ export function recordSighting({ object, camera, confidence, bbox, snapshot, see
   const quiet = lastAlert && (Date.parse(seenAt) - Date.parse(lastAlert.created_at)) < alertCooldownMs;
   if (seen >= MIN_SIGHTINGS && !quiet) {
     const message = `${object.name} showed up in camera ${camera.name}`;
-    db.prepare(`INSERT INTO alerts(object_id, sighting_id, camera_id, camera_name, message, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)`)
+    const inserted = db.prepare(`INSERT INTO alerts(object_id, sighting_id, camera_id, camera_name, message, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`)
       .run(object.id, sightingId, camera.id, camera.name, message, seenAt);
-    alert = { id: sightingId, message, cameraName: camera.name, createdAt: seenAt, objectId: object.id };
+    alert = {
+      id: Number(inserted.lastInsertRowid),
+      message, cameraName: camera.name, createdAt: seenAt, objectId: object.id,
+    };
   }
   return { sighting: sightingRow(db.prepare(`${SIGHTING_SELECT} WHERE s.id = ?`).get(sightingId)), alert };
 }
 
+const ALERT_SELECT = `SELECT a.id, a.object_id, a.sighting_id, a.camera_id, a.camera_name,
+  a.message, a.created_at, a.ack, a.clip, o.name, o.identifier, o.kind, s.snapshot
+  FROM alerts a JOIN objects o ON o.id = a.object_id
+  LEFT JOIN sightings s ON s.id = a.sighting_id`;
+
+function alertRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    objectId: row.object_id,
+    objectName: row.name,
+    identifier: row.identifier,
+    kind: row.kind,
+    cameraId: row.camera_id,
+    cameraName: row.camera_name,
+    message: row.message,
+    createdAt: row.created_at,
+    ack: Boolean(row.ack),
+    hasClip: Boolean(row.clip),
+    clip: row.clip || null,
+    snapshot: row.snapshot || null,
+  };
+}
+
+export function getAlert(id) {
+  return alertRow(db.prepare(`${ALERT_SELECT} WHERE a.id = ?`).get(id));
+}
+
 export function listAlerts({ since = 0, limit = 50 } = {}) {
-  return db.prepare(`SELECT a.id, a.object_id, a.sighting_id, a.camera_id, a.camera_name, a.message, a.created_at, a.ack, o.name, o.identifier, o.kind
-                     FROM alerts a JOIN objects o ON o.id = a.object_id
-                     WHERE a.id > ? AND o.sightings >= ? ORDER BY a.id DESC LIMIT ?`)
+  return db.prepare(`${ALERT_SELECT}
+    WHERE a.id > ? AND o.sightings >= ? ORDER BY a.id DESC LIMIT ?`)
     .all(Number(since) || 0, MIN_SIGHTINGS, Math.min(Number(limit) || 50, 200))
-    .map((row) => ({
-      id: row.id,
-      objectId: row.object_id,
-      objectName: row.name,
-      identifier: row.identifier,
-      kind: row.kind,
-      cameraId: row.camera_id,
-      cameraName: row.camera_name,
-      message: row.message,
-      createdAt: row.created_at,
-      ack: Boolean(row.ack),
-    }));
+    .map(alertRow);
+}
+
+export function setAlertClip(id, clip) {
+  db.prepare('UPDATE alerts SET clip = ? WHERE id = ?').run(clip, id);
 }
 
 export function ackAlerts(ids, all = false) {
@@ -305,7 +394,7 @@ export function ackAlerts(ids, all = false) {
 
 export function counts() {
   return {
-    objects: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE sightings >= ?').get(MIN_SIGHTINGS).n,
+    objects: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE sightings >= ? AND named = 0').get(MIN_SIGHTINGS).n,
     tracked: db.prepare('SELECT COUNT(*) AS n FROM objects').get().n,
     sightings: db.prepare(`SELECT COUNT(*) AS n FROM sightings s JOIN objects o ON o.id = s.object_id WHERE o.sightings >= ?`).get(MIN_SIGHTINGS).n,
     alerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE o.sightings >= ?`).get(MIN_SIGHTINGS).n,

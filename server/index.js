@@ -12,9 +12,10 @@ import {
 import { streams, STREAM_DIR, probe } from './streams.js';
 import { validateCamera, publicCamera, gridUrl, hdUrl } from './cameras.js';
 import { detection } from './detection.js';
+import { ALERT_CLIP_DIR } from './clips.js';
 import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
-  listSightings, listAlerts, ackAlerts, closeDatabase,
+  listSightings, listAlerts, getAlert, ackAlerts, closeDatabase,
 } from './database.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -220,7 +221,7 @@ app.post('/api/detection/settings', (req, res) => {
 
 app.get('/api/objects', (req, res) => {
   const kind = typeof req.query.kind === 'string' ? req.query.kind : null;
-  res.json(listObjects(kind));
+  res.json(listObjects(kind, req.query.all === '1'));
 });
 
 app.patch('/api/objects/:id', (req, res) => {
@@ -233,10 +234,14 @@ app.patch('/api/objects/:id', (req, res) => {
 
 app.delete('/api/objects/:id', (req, res) => {
   try {
-    const snapshots = deleteObject(req.params.id);
+    const { snapshots, clips } = deleteObject(req.params.id);
     for (const name of snapshots) {
       if (!/^[\w-]+\.jpg$/i.test(name)) continue;
       try { fs.unlinkSync(path.join(SNAPSHOT_DIR, name)); } catch { /* already gone */ }
+    }
+    for (const name of clips) {
+      if (!/^\d+\.mp4$/i.test(name)) continue;
+      try { fs.unlinkSync(path.join(ALERT_CLIP_DIR, name)); } catch { /* already gone */ }
     }
     res.json({ ok: true });
   } catch (err) {
@@ -265,6 +270,18 @@ app.get('/api/alerts', (req, res) => {
 app.post('/api/alerts/ack', (req, res) => {
   const all = req.body?.all === true;
   res.json({ changed: ackAlerts(req.body?.ids, all) });
+});
+
+app.get('/api/alerts/:id/clip', (req, res) => {
+  if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid alert' });
+  const alert = getAlert(req.params.id);
+  if (!alert?.clip || !/^\d+\.mp4$/i.test(alert.clip)) {
+    return res.status(404).json({ error: 'Clip not available' });
+  }
+  res.set('Cache-Control', 'no-store');
+  res.sendFile(alert.clip, { root: ALERT_CLIP_DIR }, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'Clip not available' });
+  });
 });
 
 app.get('/api/snapshots/:file', (req, res) => {

@@ -7,6 +7,11 @@ const camForm = document.getElementById('cam-form');
 const camError = document.getElementById('cam-error');
 const testResult = document.getElementById('cam-test-result');
 
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+})[c]);
+const when = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+
 const tiles = new Map(); // id -> { el, player, camera }
 let editingId = null;
 
@@ -267,7 +272,9 @@ document.getElementById('focus-fullscreen').addEventListener('click', () => {
   else focus.el.requestFullscreen?.();
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && focus.camera && !document.fullscreenElement && !dialog.open) closeFocus();
+  if (e.key !== 'Escape') return;
+  if (!clipModal.classList.contains('hidden')) return closeClip();
+  if (focus.camera && !document.fullscreenElement && !dialog.open) closeFocus();
 });
 
 // ---------- add / edit dialog ----------
@@ -382,7 +389,43 @@ field('logout-btn').addEventListener('click', async () => {
 
 // ---------- detection alerts ----------
 const alertsBox = document.getElementById('alerts');
+const alertsWrap = document.getElementById('alerts-wrap');
+const alertsBtn = document.getElementById('alerts-btn');
+const alertsDropdown = document.getElementById('alerts-dropdown');
+const alertsList = document.getElementById('alerts-list');
+const alertCount = document.getElementById('alert-count');
+const ackAllAlerts = document.getElementById('ack-all-alerts');
+const clipModal = document.getElementById('clip-modal');
+const clipVideo = document.getElementById('clip-video');
+const clipStill = document.getElementById('clip-still');
+const clipTitle = document.getElementById('clip-title');
+const clipNote = document.getElementById('clip-note');
+const clipClose = document.getElementById('clip-close');
 let lastAlertId = null;
+let latestAlerts = [];
+let activeClipAlert = null;
+
+const snapshotUrl = (name) => `/api/snapshots/${encodeURIComponent(name)}`;
+
+function renderAlertList() {
+  alertsList.innerHTML = latestAlerts.length
+    ? latestAlerts.map((a) => `
+        <button type="button" class="alert-item ${a.ack ? 'acked' : ''}" data-alert="${a.id}">
+          ${a.snapshot ? `<img src="${snapshotUrl(a.snapshot)}" alt="" class="alert-thumb">` : ''}
+          <span class="alert-text">
+            <strong>${esc(a.message)}</strong>
+            <span class="hint">${esc(a.cameraName)} · ${when(a.createdAt)}</span>
+          </span>
+          <span class="alert-play">${a.hasClip ? '▶ clip' : 'view'}</span>
+        </button>`).join('')
+    : '<p class="hint">No alerts yet.</p>';
+}
+
+function setAlertsOpen(open) {
+  alertsDropdown.classList.toggle('hidden', !open);
+  alertsBtn.setAttribute('aria-expanded', String(open));
+  if (open) renderAlertList();
+}
 
 function showToast(alert) {
   const item = document.createElement('div');
@@ -397,6 +440,7 @@ function showToast(alert) {
     item.remove();
     try {
       await api('/api/alerts/ack', { method: 'POST', body: JSON.stringify({ ids: [alert.id] }) });
+      pollAlerts();
     } catch { /* the next poll will retry */ }
   });
   item.append(text, close);
@@ -404,12 +448,78 @@ function showToast(alert) {
   setTimeout(() => item.remove(), 12_000);
 }
 
+function openClip(alert) {
+  activeClipAlert = alert;
+  clipTitle.textContent = alert.message;
+  const hasStill = Boolean(alert.snapshot);
+  clipVideo.classList.toggle('hidden', !alert.hasClip);
+  clipStill.classList.toggle('hidden', alert.hasClip || !hasStill);
+  clipStill.src = hasStill ? snapshotUrl(alert.snapshot) : '';
+  clipNote.textContent = alert.hasClip
+    ? '5-second clip from this alert.'
+    : hasStill ? 'No clip was saved for this alert.' : 'No media was saved for this alert.';
+  clipModal.classList.remove('hidden');
+  if (alert.hasClip) {
+    clipVideo.src = `/api/alerts/${alert.id}/clip`;
+    clipVideo.play()?.catch(() => {});
+  }
+}
+
+function closeClip() {
+  clipVideo.pause();
+  clipVideo.removeAttribute('src');
+  clipVideo.load();
+  clipModal.classList.add('hidden');
+  activeClipAlert = null;
+}
+
+alertsBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  setAlertsOpen(alertsDropdown.classList.contains('hidden'));
+});
+document.addEventListener('click', (e) => {
+  if (!alertsWrap.contains(e.target)) setAlertsOpen(false);
+});
+ackAllAlerts.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  await api('/api/alerts/ack', { method: 'POST', body: JSON.stringify({ all: true }) });
+  pollAlerts();
+});
+alertsList.addEventListener('click', async (e) => {
+  const button = e.target.closest('[data-alert]');
+  if (!button) return;
+  e.stopPropagation();
+  const alert = latestAlerts.find((a) => a.id === Number(button.dataset.alert));
+  setAlertsOpen(false);
+  if (!alert) return;
+  try {
+    await api('/api/alerts/ack', { method: 'POST', body: JSON.stringify({ ids: [alert.id] }) });
+  } catch { /* still let the user view the media */ }
+  pollAlerts();
+  openClip(alert);
+});
+clipClose.addEventListener('click', closeClip);
+clipModal.addEventListener('click', (e) => { if (e.target === clipModal) closeClip(); });
+clipVideo.addEventListener('error', () => {
+  if (!activeClipAlert) return;
+  clipVideo.classList.add('hidden');
+  const hasStill = Boolean(activeClipAlert.snapshot);
+  clipStill.classList.toggle('hidden', !hasStill);
+  if (hasStill) clipStill.src = snapshotUrl(activeClipAlert.snapshot);
+  clipNote.textContent = 'This clip is not available. The alert snapshot is shown instead.';
+});
+
 async function pollAlerts() {
   try {
     const [alerts, status] = await Promise.all([
-      api('/api/alerts?limit=10'),
+      api('/api/alerts?limit=40'),
       api('/api/detection/status'),
     ]);
+    latestAlerts = alerts;
+    renderAlertList();
+    const unread = status.unreadAlerts || 0;
+    alertCount.textContent = unread;
+    alertCount.classList.toggle('hidden', !unread);
     const badge = document.getElementById('detection-count');
     badge.textContent = status.objects || 0;
     badge.classList.toggle('hidden', !status.objects);

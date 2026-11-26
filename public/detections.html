@@ -47,14 +47,6 @@
 
     <section class="panel">
       <div class="section-head">
-        <h2>Alerts</h2>
-        <button id="ack-all">Acknowledge all</button>
-      </div>
-      <div id="alerts-list" class="alert-list"></div>
-    </section>
-
-    <section class="panel">
-      <div class="section-head">
         <h2>Detected objects</h2>
         <div class="filters">
           <input type="text" id="object-search" placeholder="Search name or ID" autocomplete="off">
@@ -66,7 +58,7 @@
         <button type="button" class="tab" data-group="vehicles">Vehicles</button>
         <button type="button" class="tab" data-group="animals">Animals</button>
       </div>
-      <p class="hint" id="objects-note">An object appears here only after it has been seen more than twice. People are saved as face shots and matched by face, not clothing. Type a name and press Confirm to save it. Reload the page to see anything new.</p>
+      <p class="hint" id="objects-note">An object appears here only after it has been seen more than twice. Once you confirm a name, that object leaves this list and confident matches are handled automatically. New images that are 40% or less sure of the same person come back here for review. Reload the page to see anything new.</p>
       <div id="objects" class="object-grid"></div>
     </section>
 
