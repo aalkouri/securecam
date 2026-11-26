@@ -126,7 +126,7 @@ the owner's real data or a server they're running**, use a scratch data folder
 and another port:
 
 ```powershell
-$env:SECURECAM_DATA = "$env:TEMP\securecam-test"; $env:PORT = "8099"; node server/index.js
+$env:SECURECAM_DATA = "$env:TEMP\securecam-test"; $env:PORT = "8099"; $env:HOST = "127.0.0.1"; node server/index.js
 ```
 
 **Always start and restart the real server with `npm run restart`.** Do not
@@ -139,6 +139,12 @@ bind its port, and the restart script clears stale `--watch` copies.
 `npm run restart` (scripts/restart.ps1) stops whatever serves the port, with
 its ffmpeg processes, and starts `node --watch server/index.js` in the
 background, logging to `data/server.log` and `data/server-error.log`.
+
+**LAN access:** the server listens on `127.0.0.1` unless `HOST` is set. The
+owner chose to open it to the home network: a gitignored `.env` in the project
+root holds `HOST=0.0.0.0`, loaded by `npm start`, `npm run dev` and
+`npm run restart` through node's `--env-file-if-exists=.env`. Test servers
+should set `HOST=127.0.0.1` explicitly (real env vars win over `.env`).
 
 Sessions are in memory, so restarting the server signs everyone out. Don't kill
 node or ffmpeg processes you didn't start.

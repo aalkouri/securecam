@@ -5,8 +5,8 @@
   "main": "server/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server/index.js",
-    "dev": "node --watch server/index.js",
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "dev": "node --env-file-if-exists=.env --watch server/index.js",
     "restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restart.ps1"
   },
   "keywords": [],

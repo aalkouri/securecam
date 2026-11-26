@@ -29,7 +29,7 @@ function Stop-Tree($top) {
 # (Plain "node server/index.js" test servers on other ports are left alone.)
 $listener = (Get-NetTCPConnection -LocalPort $port -State Listen | Select-Object -First 1).OwningProcess
 Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
-  Where-Object { $_.CommandLine -match '--watch\s+server[\\/]index\.js' } |
+  Where-Object { $_.CommandLine -match '--watch\s+"?server[\\/]index\.js' } |
   ForEach-Object {
     $kidIds = @((Get-CimInstance Win32_Process -Filter "ParentProcessId=$($_.ProcessId)").ProcessId)
     if ($kidIds -notcontains $listener) {
@@ -59,7 +59,8 @@ $log = Join-Path $root 'data\server.log'
 $errLog = Join-Path $root 'data\server-error.log'
 
 # --watch restarts the server by itself whenever the code changes.
-Start-Process node -ArgumentList '--watch', 'server/index.js' -WorkingDirectory $root `
+# Settings such as HOST come from an optional .env file in the project root.
+Start-Process node -ArgumentList '--env-file-if-exists=.env', '--watch', 'server/index.js' -WorkingDirectory $root `
   -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $errLog
 
 for ($i = 0; $i -lt 20; $i++) {
