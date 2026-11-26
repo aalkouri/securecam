@@ -23,6 +23,9 @@ npm start
 (The `install-scripts` steps are only needed once on a fresh machine; newer npm
 versions hold native packages' install scripts back by default.)
 
+To restart a running server (or start it in the background), run
+`npm run restart`. It logs to `data/server.log`.
+
 Open http://localhost:8080. The first visit asks you to create the admin account.
 
 ## Adding cameras

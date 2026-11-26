@@ -123,6 +123,10 @@ and another port:
 $env:SECURECAM_DATA = "$env:TEMP\securecam-test"; $env:PORT = "8099"; node server/index.js
 ```
 
+`npm run restart` (scripts/restart.ps1) stops whatever serves the port, with
+its ffmpeg processes, and starts `node --watch server/index.js` in the
+background, logging to `data/server.log` and `data/server-error.log`.
+
 Sessions are in memory, so restarting the server signs everyone out. Don't kill
 node or ffmpeg processes you didn't start.
 
