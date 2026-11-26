@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SecureCam · Setup</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="auth-wrap">
+    <form class="auth-card" id="auth-form" data-mode="setup">
+      <div class="brand"><span class="brand-dot"></span>SecureCam</div>
+      <h1>Welcome</h1>
+      <p>Create the admin account that protects your camera feeds.</p>
+      <label for="username">Username</label>
+      <input type="text" id="username" autocomplete="username" required autofocus>
+      <label for="password">Password</label>
+      <input type="password" id="password" autocomplete="new-password" minlength="10" required>
+      <label for="confirm">Confirm password</label>
+      <input type="password" id="confirm" autocomplete="new-password" minlength="10" required>
+      <div class="hint">At least 10 characters.</div>
+      <button type="submit" class="primary">Create account</button>
+      <div class="error" id="error" role="alert"></div>
+    </form>
+  </div>
+  <script src="/login.js"></script>
+</body>
+</html>

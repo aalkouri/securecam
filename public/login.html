@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SecureCam · Sign in</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="auth-wrap">
+    <form class="auth-card" id="auth-form" data-mode="login">
+      <div class="brand"><span class="brand-dot"></span>SecureCam</div>
+      <h1>Sign in</h1>
+      <p>Enter your admin credentials to view your cameras.</p>
+      <label for="username">Username</label>
+      <input type="text" id="username" autocomplete="username" required autofocus>
+      <label for="password">Password</label>
+      <input type="password" id="password" autocomplete="current-password" required>
+      <button type="submit" class="primary">Sign in</button>
+      <div class="error" id="error" role="alert"></div>
+    </form>
+  </div>
+  <script src="/login.js"></script>
+</body>
+</html>
