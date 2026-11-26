@@ -37,6 +37,8 @@ The grid shows each camera's low-res stream. Click a camera to open the full
 view, which loads the full-quality stream (4K on Reolink) and stops it again
 30 seconds after you leave. H.265 streams play directly where the browser
 supports it; otherwise the server converts them to H.264, which uses more CPU.
+The full view also plays the camera's sound, with a button to turn it on or off;
+the grid is always silent.
 
 Use `test://demo` (type *Other*) to try the app without any hardware.
 

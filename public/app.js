@@ -175,6 +175,9 @@ const focus = {
   player: null,
   token: 0, // bumps on every switch so stale HD responses are ignored
   wantHd: localStorage.getItem('securecam.hd') !== '0',
+  soundBtn: document.getElementById('focus-sound'),
+  hasAudio: false, // does the stream now playing carry sound?
+  wantSound: localStorage.getItem('securecam.sound') !== '0',
 };
 
 function setNote(text) {
@@ -182,10 +185,25 @@ function setNote(text) {
   focus.note.classList.toggle('hidden', !text);
 }
 
-function focusPlay(src, label) {
+function renderSound() {
+  focus.soundBtn.classList.toggle('hidden', !focus.hasAudio);
+  focus.soundBtn.textContent = focus.video.muted ? '🔇 Sound off' : '🔊 Sound on';
+}
+
+function focusPlay(src, label, audio = false) {
   focus.player?.();
+  focus.hasAudio = audio;
+  focus.video.muted = !(audio && focus.wantSound);
   focus.player = play(focus.video, src);
   focus.quality.textContent = label;
+  renderSound();
+  // Browsers may refuse to start playback with sound; fall back to muted.
+  focus.video.play()?.catch((err) => {
+    if (err.name !== 'NotAllowedError' || focus.video.muted) return;
+    focus.video.muted = true;
+    renderSound();
+    focus.video.play()?.catch(() => {});
+  });
 }
 
 async function loadFocusStream() {
@@ -200,12 +218,12 @@ async function loadFocusStream() {
 
   focus.quality.textContent = 'SD · loading HD…';
   try {
-    const { src, variant } = await api(`/api/cameras/${camera.id}/hd`, {
+    const { src, variant, audio } = await api(`/api/cameras/${camera.id}/hd`, {
       method: 'POST',
       body: JSON.stringify({ hevc: PLAYS_HEVC }),
     });
     if (token !== focus.token) return;
-    focusPlay(src, variant === 'hd-avc' ? 'HD (converted)' : 'HD');
+    focusPlay(src, variant === 'hd-avc' ? 'HD (converted)' : 'HD', audio);
   } catch (err) {
     if (token !== focus.token) return;
     focus.quality.textContent = 'SD';
@@ -232,6 +250,12 @@ function closeFocus() {
   if (document.fullscreenElement) document.exitFullscreen();
 }
 
+focus.soundBtn.addEventListener('click', () => {
+  focus.video.muted = !focus.video.muted;
+  focus.wantSound = !focus.video.muted;
+  localStorage.setItem('securecam.sound', focus.wantSound ? '1' : '0');
+  renderSound();
+});
 focus.hdBtn.addEventListener('click', () => {
   focus.wantHd = !focus.wantHd;
   localStorage.setItem('securecam.hd', focus.wantHd ? '1' : '0');

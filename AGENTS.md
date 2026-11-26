@@ -37,6 +37,11 @@ folder `data/streams/<cameraId>_<variant>/`:
 - `hd-avc` — on demand for browsers that can't decode H.265; main stream
   converted to H.264, capped at 1920 wide.
 
+**Audio:** the `hd` and `hd-avc` variants carry the camera's sound, re-encoded
+to AAC (the track is optional, so cameras without a microphone still work). The
+`grid` variant is always silent. The full view has a sound on/off button; if
+the browser blocks playback with sound, it falls back to muted.
+
 The browser reports H.265 support (`MediaSource.isTypeSupported`) to
 `POST /api/cameras/:id/hd`. Every fetch under `/streams/<key>/` marks that
 stream as watched, and HD variants idle for 30s are stopped. Codecs are found
@@ -103,6 +108,6 @@ node or ffmpeg processes you didn't start.
 
 ## Open decisions / known issues
 
-- No recording, motion detection, audio, or HTTPS yet. For remote access use a
+- No recording, motion detection, or HTTPS yet. For remote access use a
   VPN (Tailscale/WireGuard) or an HTTPS reverse proxy; don't expose the port
   directly.

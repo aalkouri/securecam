@@ -22,13 +22,14 @@ export const VARIANTS = ['grid', 'hd', 'hd-avc'];
 
 // ---------- probing ----------
 
-// Ask the camera what it's sending. Resolves { codec, width, height } or throws.
+// Ask the camera what it's sending. Resolves { codec, width, height, audio }
+// (audio: whether there is a sound track) or throws.
 export function probe(url) {
-  if (url.startsWith('test://')) return Promise.resolve({ codec: 'test', width: 1920, height: 1080 });
+  if (url.startsWith('test://')) return Promise.resolve({ codec: 'test', width: 1920, height: 1080, audio: false });
   return new Promise((resolve, reject) => {
     const args = ['-v', 'error'];
     if (url.startsWith('rtsp')) args.push('-rtsp_transport', 'tcp', '-timeout', '10000000');
-    args.push('-select_streams', 'v:0', '-show_entries', 'stream=codec_name,width,height', '-of', 'json', isClip(url) ? clipPath(url) : url);
+    args.push('-show_entries', 'stream=codec_type,codec_name,width,height', '-of', 'json', isClip(url) ? clipPath(url) : url);
     const proc = spawn(FFPROBE, args, { windowsHide: true });
     let out = '';
     let err = '';
@@ -39,19 +40,25 @@ export function probe(url) {
     proc.on('close', () => {
       clearTimeout(timer);
       try {
-        const s = JSON.parse(out).streams?.[0];
-        if (s?.codec_name) return resolve({ codec: s.codec_name, width: s.width, height: s.height });
+        const all = JSON.parse(out).streams || [];
+        const s = all.find((x) => x.codec_type === 'video');
+        const audio = all.some((x) => x.codec_type === 'audio');
+        if (s?.codec_name) return resolve({ codec: s.codec_name, width: s.width, height: s.height, audio });
       } catch { /* fall through */ }
       reject(new Error(friendly(redact(err.trim().split('\n').pop() || 'No video stream found'))));
     });
   });
 }
 
-const codecCache = new Map(); // url -> codec
+const codecCache = new Map(); // url -> probe result
+
+async function infoFor(url) {
+  if (!codecCache.has(url)) codecCache.set(url, await probe(url));
+  return codecCache.get(url);
+}
 
 async function codecFor(url) {
-  if (!codecCache.has(url)) codecCache.set(url, (await probe(url)).codec);
-  return codecCache.get(url);
+  return (await infoFor(url)).codec;
 }
 
 // ---------- ffmpeg arguments ----------
@@ -156,6 +163,13 @@ class StreamManager {
     return codec === 'h264' ? 'hd' : 'hd-avc';
   }
 
+  // Whether the camera's full-quality stream carries sound.
+  async hasAudio(camera) {
+    const url = hdUrl(camera);
+    if (!url) return false;
+    return infoFor(url).then((info) => Boolean(info.audio), () => false);
+  }
+
   // Start a variant if it isn't already running.
   ensure(camera, variant) {
     const key = this.key(camera.id, variant);
@@ -224,7 +238,9 @@ class StreamManager {
     const args = [
       '-hide_banner', '-loglevel', 'error',
       ...videoArgs,
-      '-an',
+      // Sound only on the full-view streams; the grid stays silent. The "?" makes
+      // the audio track optional, and AAC plays everywhere whatever the camera sends.
+      ...(variant === 'grid' ? ['-an'] : ['-map', '0:v:0', '-map', '0:a:0?', '-c:a', 'aac', '-b:a', '96k', '-ac', '2']),
       '-f', 'hls',
       '-hls_time', '2',
       '-hls_list_size', '6',

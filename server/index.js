@@ -178,7 +178,7 @@ app.post('/api/cameras/:id/hd', async (req, res) => {
   if (!variant) return res.status(404).json({ error: 'This camera has no separate HD stream' });
   const { key } = streams.ensure(cam, variant);
   if (await streams.waitLive(key, 20_000)) {
-    return res.json({ src: `/streams/${key}/index.m3u8`, variant });
+    return res.json({ src: `/streams/${key}/index.m3u8`, variant, audio: await streams.hasAudio(cam) });
   }
   const { lastError } = streams.status(cam.id, variant);
   res.status(504).json({ error: lastError || 'HD stream took too long to start' });
