@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Detections — SecureCam</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="brand-dot"></span>SecureCam</div>
+    <div class="actions">
+      <a class="nav-link" href="/">Cameras</a>
+      <button id="logout-btn">Sign out</button>
+    </div>
+  </header>
+
+  <main class="detections">
+    <section class="panel status-panel">
+      <div>
+        <h2>Detection</h2>
+        <p class="hint" id="detection-status">Loading…</p>
+      </div>
+      <div class="status-actions">
+        <label class="check"><input type="checkbox" id="detection-enabled"> Enabled</label>
+        <select id="detection-interval" aria-label="Scan interval">
+          <option value="2000">Every 2 seconds</option>
+          <option value="4000">Every 4 seconds</option>
+          <option value="10000">Every 10 seconds</option>
+          <option value="30000">Every 30 seconds</option>
+        </select>
+        <button id="detection-save" class="primary">Save</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>Alerts</h2>
+        <button id="ack-all">Acknowledge all</button>
+      </div>
+      <div id="alerts-list" class="alert-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>Known objects</h2>
+        <div class="filters">
+          <select id="kind-filter" aria-label="Filter by type">
+            <option value="">All types</option>
+            <option value="car">Cars</option>
+            <option value="truck">Trucks</option>
+            <option value="bus">Buses</option>
+            <option value="person">People</option>
+            <option value="bicycle">Bicycles</option>
+            <option value="motorcycle">Motorcycles</option>
+            <option value="cat">Cats</option>
+            <option value="dog">Dogs</option>
+          </select>
+          <input type="text" id="object-search" placeholder="Search name or ID" autocomplete="off">
+        </div>
+      </div>
+      <div id="objects" class="object-grid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>Recent sightings</h2>
+        <select id="sighting-filter" aria-label="Filter sightings by object">
+          <option value="">All objects</option>
+        </select>
+      </div>
+      <div id="sightings" class="sighting-grid"></div>
+    </section>
+  </main>
+
+  <script src="/detections.js"></script>
+</body>
+</html>

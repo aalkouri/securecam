@@ -10,6 +10,7 @@
   <header>
     <div class="brand"><span class="brand-dot"></span>SecureCam</div>
     <div class="actions">
+      <a class="nav-link" href="/detections.html">Detections</a>
       <div class="layout-toggle" id="layout-toggle" aria-label="Grid columns">
         <button data-cols="1" title="1 column">1</button>
         <button data-cols="2" title="2 columns">2</button>
@@ -29,6 +30,8 @@
     </div>
     <div class="grid" id="grid"></div>
   </main>
+
+  <div id="alerts" class="toasts" aria-live="polite"></div>
 
   <!-- Full-screen single-camera view -->
   <div class="focus hidden" id="focus" role="dialog" aria-modal="true" aria-labelledby="focus-name">

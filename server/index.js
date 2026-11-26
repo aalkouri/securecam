@@ -10,6 +10,11 @@ import {
 } from './auth.js';
 import { streams, STREAM_DIR, probe } from './streams.js';
 import { validateCamera, publicCamera, gridUrl, hdUrl } from './cameras.js';
+import { detection } from './detection.js';
+import {
+  SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject,
+  listSightings, listAlerts, ackAlerts, closeDatabase,
+} from './database.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 8080);
@@ -184,16 +189,83 @@ app.post('/api/cameras/:id/hd', async (req, res) => {
   res.status(504).json({ error: lastError || 'HD stream took too long to start' });
 });
 
+// ---------- detection / database ----------
+app.get('/api/detection/status', (req, res) => res.json(detection.status()));
+
+app.post('/api/detection/settings', (req, res) => {
+  const body = req.body || {};
+  if (typeof body.enabled === 'boolean') detection.enabled = body.enabled;
+  if (body.intervalMs !== undefined) {
+    const ms = Number(body.intervalMs);
+    if (!Number.isFinite(ms) || ms < 1000 || ms > 60_000) {
+      return res.status(400).json({ error: 'Interval must be between 1000 and 60000 ms' });
+    }
+    setSetting('detection.intervalMs', ms);
+    detection.restart();
+  }
+  res.json(detection.status());
+});
+
+app.get('/api/objects', (req, res) => {
+  const kind = typeof req.query.kind === 'string' ? req.query.kind : null;
+  res.json(listObjects(kind));
+});
+
+app.patch('/api/objects/:id', (req, res) => {
+  try {
+    res.json(renameObject(req.params.id, req.body?.name));
+  } catch (err) {
+    res.status(err.message === 'Object not found' ? 404 : 400).json({ error: err.message });
+  }
+});
+
+app.get('/api/objects/:id/sightings', (req, res) => {
+  if (!getObject(req.params.id)) return res.status(404).json({ error: 'Object not found' });
+  res.json(listSightings({ objectId: req.params.id, limit: req.query.limit }));
+});
+
+app.get('/api/sightings', (req, res) => {
+  res.json(listSightings({
+    objectId: typeof req.query.objectId === 'string' ? req.query.objectId : null,
+    cameraId: typeof req.query.cameraId === 'string' ? req.query.cameraId : null,
+    kind: typeof req.query.kind === 'string' ? req.query.kind : null,
+    limit: req.query.limit,
+  }));
+});
+
+app.get('/api/alerts', (req, res) => {
+  res.json(listAlerts({ since: req.query.since, limit: req.query.limit }));
+});
+
+app.post('/api/alerts/ack', (req, res) => {
+  const all = req.body?.all === true;
+  res.json({ changed: ackAlerts(req.body?.ids, all) });
+});
+
+app.get('/api/snapshots/:file', (req, res) => {
+  const name = req.params.file;
+  if (!/^[\w-]+\.jpg$/i.test(name)) return res.status(400).json({ error: 'Invalid snapshot name' });
+  res.set('Cache-Control', 'no-store');
+  res.sendFile(name, { root: SNAPSHOT_DIR }, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'Snapshot not found' });
+  });
+});
+
 // ---------- boot ----------
 for (const cam of getCameras()) if (cam.enabled) streams.startCamera(cam);
+detection.start();
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`SecureCam running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
 });
 
 function shutdown() {
+  detection.stop();
   streams.stopAll();
-  server.close(() => process.exit(0));
+  server.close(() => {
+    closeDatabase();
+    process.exit(0);
+  });
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

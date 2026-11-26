@@ -167,3 +167,40 @@ body.no-scroll { overflow: hidden; }
   background: rgba(0,0,0,.7); border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 12px; font-size: 13px; color: var(--warn);
 }
+
+/* ---- detections ---- */
+.nav-link { color: var(--text); text-decoration: none; font-size: 14px; padding: 8px 12px; border-radius: 8px; }
+.nav-link:hover { background: var(--panel-2); }
+.detections { max-width: 1400px; margin: 0 auto; display: grid; gap: 16px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.panel h2 { margin: 0 0 12px; font-size: 18px; }
+.status-panel { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.status-panel h2 { margin-bottom: 6px; }
+.status-actions { display: flex; gap: 10px; align-items: center; }
+.status-actions label.check { margin: 0; }
+.status-actions select { width: auto; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.section-head h2 { margin: 0; }
+.filters { display: flex; gap: 8px; }
+.filters select { width: auto; }
+.filters input { width: 220px; }
+.alert-list { display: grid; gap: 8px; }
+.alert-item { display: flex; align-items: center; gap: 12px; padding: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; }
+.alert-item.acked { opacity: .6; }
+.alert-thumb { width: 64px; height: 40px; object-fit: cover; border-radius: 4px; background: #000; }
+.alert-text { flex: 1; display: flex; flex-direction: column; }
+.object-grid, .sighting-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.object-card, .sighting-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.object-card img, .sighting-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: #000; }
+.object-body { padding: 10px; }
+.object-title { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+.object-name { padding: 6px 8px !important; }
+.identifier { font-size: 11px; color: var(--accent); white-space: nowrap; }
+.sighting-card { padding-bottom: 10px; }
+.sighting-card .hint { padding: 4px 10px 0; }
+.no-image { aspect-ratio: 16 / 9; display: grid; place-items: center; color: var(--muted); background: #000; }
+
+/* ---- alert toasts ---- */
+.toasts { position: fixed; right: 20px; bottom: 20px; z-index: 30; display: grid; gap: 8px; max-width: 360px; }
+.toast { display: flex; gap: 10px; align-items: center; background: var(--panel); border: 1px solid var(--accent); border-left-width: 4px; border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+.toast span { flex: 1; font-size: 14px; }

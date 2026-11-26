@@ -380,5 +380,44 @@ field('logout-btn').addEventListener('click', async () => {
   location.replace('/login.html');
 });
 
+// ---------- detection alerts ----------
+const alertsBox = document.getElementById('alerts');
+let lastAlertId = null;
+
+function showToast(alert) {
+  const item = document.createElement('div');
+  item.className = 'toast';
+  const text = document.createElement('span');
+  text.textContent = alert.message;
+  const close = document.createElement('button');
+  close.className = 'icon';
+  close.textContent = '✕';
+  close.title = 'Dismiss';
+  close.addEventListener('click', async () => {
+    item.remove();
+    try {
+      await api('/api/alerts/ack', { method: 'POST', body: JSON.stringify({ ids: [alert.id] }) });
+    } catch { /* the next poll will retry */ }
+  });
+  item.append(text, close);
+  alertsBox.appendChild(item);
+  setTimeout(() => item.remove(), 12_000);
+}
+
+async function pollAlerts() {
+  try {
+    const alerts = await api('/api/alerts?limit=10');
+    const newest = alerts[0]?.id || 0;
+    if (lastAlertId === null) lastAlertId = newest;
+    else {
+      for (const alert of alerts.filter((a) => a.id > lastAlertId).reverse()) showToast(alert);
+      lastAlertId = newest;
+    }
+  } catch { /* api() handles authentication failures */ }
+}
+
+pollAlerts();
+setInterval(pollAlerts, 5000);
+
 refresh();
 setInterval(refresh, 3000);

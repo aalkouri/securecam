@@ -24,7 +24,10 @@ h264 even when the stream is H.265). RTSP must be enabled in the Reolink app.
 | `server/store.js` | JSON-file persistence in `data/` (gitignored) |
 | `server/cameras.js` | Camera types (`reolink`, `generic`), validation, stream URLs, browser-safe view |
 | `server/streams.js` | ffprobe/ffmpeg process manager |
-| `public/` | `index.html` + `app.js` (dashboard), `login.html`/`setup.html` + `login.js`, `style.css` |
+| `server/database.js` | SQLite (`node:sqlite`) objects, sightings, alerts, detection settings |
+| `server/detector.js` | ONNX detection (YOLOv8n) + 512-d vehicle re-ID (YOLO26n-ReID) |
+| `server/detection.js` | Periodic frame capture, detection loop, alert creation |
+| `public/` | `index.html` + `app.js` (dashboard), `detections.html` + `detections.js`, `login.html`/`setup.html` + `login.js`, `style.css` |
 
 ## How streaming works
 
@@ -54,6 +57,28 @@ Only plain filenames are accepted, so a camera URL can never reach other files
 on disk. Clips are not committed: `data/` is gitignored, and clips taken from
 elsewhere (e.g. YouTube samples) are not ours to redistribute.
 
+## Object detection
+
+Every enabled camera is sampled for one frame at a configurable interval
+(default 4s). Frames are decoded locally with ONNX Runtime: YOLOv8n finds
+people, bicycles, cars, motorcycles, buses, trucks, cats and dogs; crops of
+those objects are embedded by YOLO26n-ReID (or fingerprinted when that model
+can't load). Results go into SQLite at `data/securecam.db`:
+
+- `objects` — one row per recognised object, with a stable `identifier` like
+  `CAR-0001` and an owner-editable name.
+- `sightings` — camera, time, confidence, bounding box and a JPEG snapshot in
+  `data/snapshots/`.
+- `alerts` — `"<name> showed up in camera <camera>"`, throttled per object and
+  camera.
+
+Repeated sightings from the same camera within 30s are collapsed; alerts have
+a 60s cooldown. Both intervals are stored in the `settings` DB table. The
+dashboard shows new alerts as toasts; `/detections.html` lets the owner rename
+objects and browse sightings. Embeddings are only stored server-side — API
+responses never include them. Model files are downloaded once from the pinned
+Ultralytics release into `data/models/` and verified by SHA-256.
+
 ## Rules that must hold
 
 - **Never send camera passwords to the browser.** `publicCamera()` is the only
@@ -65,10 +90,13 @@ elsewhere (e.g. YouTube samples) are not ours to redistribute.
   from the user.
 - Redact credentials from any ffmpeg/ffprobe error before storing or returning
   it (`redact()` in streams.js).
-- `data/` holds secrets. Never commit it.
+- `data/` holds secrets, snapshots, clips and models. Never commit it.
 - The admin password minimum is **7 characters** (the owner's decision). It's
   enforced in `server/index.js` (`POST /api/setup`) and shown in
   `public/setup.html`; keep the two in step.
+- Detection writes to SQLite with the built-in `node:sqlite`; don't add a native
+  SQLite dependency. Spawn ffmpeg from detection with an argument array too.
+- Never expose object embeddings or raw camera URLs through the detection API.
 
 ## Gotchas already learned (Windows)
 
@@ -108,6 +136,12 @@ node or ffmpeg processes you didn't start.
 
 ## Open decisions / known issues
 
-- No recording, motion detection, or HTTPS yet. For remote access use a
+- No recording, scheduled clips, or HTTPS yet. For remote access use a
   VPN (Tailscale/WireGuard) or an HTTPS reverse proxy; don't expose the port
   directly.
+- Re-ID uses generic vehicle embeddings, not licence-plate recognition. The
+  similarity threshold (0.80 cosine) and 60s alert cooldown may need tuning
+  for the owner's driveway. People/animals are detected and stored too, but the
+  alert wording was designed around named cars.
+- Detection runs on CPU. `onnxruntime-node` install scripts are approved via
+  npm's `install-scripts` command; keep that in mind on a fresh machine.
