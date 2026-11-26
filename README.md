@@ -40,6 +40,9 @@ supports it; otherwise the server converts them to H.264, which uses more CPU.
 
 Use `test://demo` (type *Other*) to try the app without any hardware.
 
+To loop a recorded video as a stand-in camera, put the file in `data/clips/`
+and add a camera of type *Other* with the URL `clip://your-file.mp4`.
+
 ## Configuration
 
 | Variable       | Default     | Purpose                                           |

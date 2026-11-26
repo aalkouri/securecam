@@ -1,8 +1,28 @@
 // Camera definitions: validation, stream URL derivation, and the
 // browser-safe view of a camera (never includes passwords).
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { DATA_DIR } from './store.js';
+
 export const CAMERA_TYPES = ['reolink', 'generic'];
-const URL_SCHEMES = /^(rtsp|rtsps|http|https|test):\/\//i;
+const URL_SCHEMES = /^(rtsp|rtsps|http|https|test|clip):\/\//i;
+
+// Recorded clips that can stand in for a camera live in data/clips/ and are
+// referenced as clip://<filename>. Only plain filenames are accepted, so a
+// camera URL can never point at an arbitrary file on disk.
+export const CLIP_DIR = path.join(DATA_DIR, 'clips');
+const CLIP_NAME = /^\w[\w .()-]*\.(mp4|mkv|mov|webm)$/i;
+
+export function isClip(url) {
+  return typeof url === 'string' && url.toLowerCase().startsWith('clip://');
+}
+
+// Absolute path of a clip:// URL, or null if the name is not allowed.
+export function clipPath(url) {
+  const name = url.slice('clip://'.length);
+  return CLIP_NAME.test(name) ? path.join(CLIP_DIR, name) : null;
+}
 const HOST_RE = /^[a-zA-Z0-9.-]{1,253}$/;
 
 // Main (full quality) and sub (low-res) stream URLs for a camera.
@@ -14,8 +34,9 @@ export function streamUrls(cam) {
     // Reolink uses these paths even when the stream is actually H.265.
     return { main: `${base}/h264Preview_01_main`, sub: `${base}/h264Preview_01_sub` };
   }
-  if (cam.url?.startsWith('test://')) {
-    // Synthetic camera: behaves like a two-stream camera so the HD path can be tried.
+  if (cam.url?.startsWith('test://') || isClip(cam.url)) {
+    // Synthetic or recorded camera: behaves like a two-stream camera
+    // (low-res in the grid, full quality in the full view).
     return { main: cam.url, sub: cam.url };
   }
   return { main: cam.url, sub: cam.subUrl || null };
@@ -81,7 +102,12 @@ export function validateCamera(body, existing) {
   }
 
   const url = unmask(str(body.url), existing?.url);
-  if (!URL_SCHEMES.test(url)) throw new Error('Stream URL must start with rtsp://, rtsps://, http(s):// or test://');
+  if (!URL_SCHEMES.test(url)) throw new Error('Stream URL must start with rtsp://, rtsps://, http(s)://, clip:// or test://');
+  if (isClip(url)) {
+    const file = clipPath(url);
+    if (!file) throw new Error('Clip name must be a plain video filename, e.g. clip://sample.mp4');
+    if (!fs.existsSync(file)) throw new Error(`No such clip in data/clips: ${url.slice(7)}`);
+  }
   const subUrl = unmask(str(body.subUrl), existing?.subUrl) || null;
   if (subUrl && !URL_SCHEMES.test(subUrl)) throw new Error('Low-res URL must start with rtsp://, rtsps://, http(s)://');
   return { name, type, enabled, url, subUrl };

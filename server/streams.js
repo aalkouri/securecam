@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './store.js';
-import { gridUrl, hdUrl } from './cameras.js';
+import { gridUrl, hdUrl, isClip, clipPath } from './cameras.js';
 
 export const STREAM_DIR = path.join(DATA_DIR, 'streams');
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -28,7 +28,7 @@ export function probe(url) {
   return new Promise((resolve, reject) => {
     const args = ['-v', 'error'];
     if (url.startsWith('rtsp')) args.push('-rtsp_transport', 'tcp', '-timeout', '10000000');
-    args.push('-select_streams', 'v:0', '-show_entries', 'stream=codec_name,width,height', '-of', 'json', url);
+    args.push('-select_streams', 'v:0', '-show_entries', 'stream=codec_name,width,height', '-of', 'json', isClip(url) ? clipPath(url) : url);
     const proc = spawn(FFPROBE, args, { windowsHide: true });
     let out = '';
     let err = '';
@@ -76,9 +76,17 @@ function testArgs(camera, variant) {
 
 function cameraArgs(url, codec, variant) {
   const input = [];
-  // Give up on unreachable cameras after 10s (value is in microseconds).
-  if (url.startsWith('rtsp')) input.push('-rtsp_transport', 'tcp', '-timeout', '10000000');
-  input.push('-i', url);
+  if (isClip(url)) {
+    // Recorded clip: loop forever, played at real-time speed like a live feed.
+    // The initial burst fills the first HLS segments quickly so playback starts sooner.
+    input.push('-stream_loop', '-1', '-re', '-readrate_initial_burst', '8', '-i', clipPath(url));
+    // There's no separate low-res file, so shrink the clip for the grid.
+    if (variant === 'grid') return [...input, '-vf', 'scale=640:-2', '-r', '15', ...X264];
+  } else {
+    // Give up on unreachable cameras after 10s (value is in microseconds).
+    if (url.startsWith('rtsp')) input.push('-rtsp_transport', 'tcp', '-timeout', '10000000');
+    input.push('-i', url);
+  }
 
   if (codec === 'h264') return [...input, '-c:v', 'copy'];
   if (codec === 'hevc' && variant === 'hd') return [...input, '-c:v', 'copy', '-tag:v', 'hvc1'];

@@ -43,6 +43,12 @@ stream as watched, and HD variants idle for 30s are stopped. Codecs are found
 with ffprobe and cached per URL. `test://demo` is a synthetic camera (H.264
 grid, H.265 HD) for testing without hardware.
 
+`clip://<filename>` plays a recorded video from `data/clips/` on a loop as if
+it were a live camera (grid: shrunk to 640 wide; HD: the file passed through).
+Only plain filenames are accepted, so a camera URL can never reach other files
+on disk. Clips are not committed: `data/` is gitignored, and clips taken from
+elsewhere (e.g. YouTube samples) are not ours to redistribute.
+
 ## Rules that must hold
 
 - **Never send camera passwords to the browser.** `publicCamera()` is the only
