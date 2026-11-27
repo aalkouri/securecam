@@ -41,15 +41,17 @@ Each camera tile shows its building and room.
 
 - **Reolink:** choose *Reolink* and enter the camera's IP address, username
   (usually `admin`) and password. Turn on RTSP first in the Reolink app:
-  Settings → Network → Advanced → Port Settings.
+  Settings → Network → Advanced → Port Settings. SecureCam automatically uses
+  the camera's low-res stream for the grid.
 - **Other brands:** choose *Other* and paste the RTSP URL, e.g.
-  `rtsp://user:pass@192.168.1.50:554/stream1`. If the camera has a low-res
-  stream, add it too and the grid will use it.
+  `rtsp://user:pass@192.168.1.50:554/stream1`. The grid uses this stream when
+  no lower-bandwidth variant is available.
 
 Use **Test connection** to check the settings before saving.
 
-The grid shows each camera's low-res stream. Click a camera to open the full
-view, which loads the full-quality stream (4K on Reolink) and stops it again
+The grid shows the lowest-bandwidth stream available for each camera. Click a
+camera to open the full view, which loads the full-quality stream (4K on
+Reolink) and stops it again
 30 seconds after you leave. H.265 streams play directly where the browser
 supports it; otherwise the server converts them to H.264, which uses more CPU.
 The full view also plays the camera's sound, with a button to turn it on or off;
@@ -128,7 +130,7 @@ to browse a previous day — SecureCam unpacks that ZIP on demand and plays the
 clips without exposing a download. Archive days older than **30 days** are
 removed automatically.
 
-Each enabled camera is always recording a rolling **10-minute low-res buffer**.
+Each enabled camera is always recording a rolling **10-minute grid buffer**.
 When an alert happens, SecureCam saves a **five-second 1080p clip from that
 camera's full-quality stream** and links it to the alert. The buffer uses
 roughly 0.5–1 Mbps per camera; with 2–4 cameras the ten-minute window stays well

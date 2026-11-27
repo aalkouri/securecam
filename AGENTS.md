@@ -93,7 +93,8 @@ query:
 Each camera has up to three stream variants, each its own ffmpeg process and
 folder `data/streams/<cameraId>_<variant>/`:
 
-- `grid` — always on; the low-res sub stream shown in the grid.
+- `grid` — always on; the lowest-bandwidth stream shown in the grid (the
+  Reolink sub stream where available, otherwise the main stream).
 - `hd` — on demand when the full view opens; main stream passed through as-is
   (H.264 or H.265).
 - `hd-avc` — on demand for browsers that can't decode H.265; main stream

@@ -323,7 +323,7 @@ function updatePlacementFields() {
   const creatingRoom = creatingBuilding || field('cam-room').value === '__new__';
   field('cam-new-building').classList.toggle('hidden', !creatingBuilding);
   field('cam-new-building').required = creatingBuilding;
-  field('room-select-field').classList.toggle('hidden', creatingBuilding);
+  field('room-select-field').classList.toggle('placeholder', creatingBuilding);
   field('cam-room').disabled = creatingBuilding;
   field('cam-room').required = !creatingBuilding;
   field('cam-new-room').classList.toggle('hidden', !creatingRoom);
@@ -410,7 +410,6 @@ async function openDialog(camera) {
   const sampleUrl = camera?.url || '';
   field('cam-sample').value = sampleUrl && [...field('cam-sample').options]
     .some((option) => option.value === sampleUrl) ? sampleUrl : '';
-  field('cam-suburl').value = camera?.subUrl || '';
   field('cam-enabled').checked = camera ? camera.enabled : true;
   showTypeFields();
   dialog.showModal();
@@ -434,7 +433,6 @@ function formPayload() {
     username: field('cam-username').value,
     password: field('cam-password').value,
     url: field('cam-url').value,
-    subUrl: field('cam-suburl').value,
     enabled: field('cam-enabled').checked,
   };
 }

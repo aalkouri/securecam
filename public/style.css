@@ -151,6 +151,8 @@ select {
 .placement-row { grid-template-columns: 1fr 1fr; }
 #fields-reolink .row-2:nth-of-type(2) { grid-template-columns: 1fr 1fr; }
 .placement-row input[type=text] { margin-top: 6px; }
+/* Keep the room label and input aligned while the unused select is hidden. */
+#room-select-field.placeholder select { visibility: hidden; }
 .test-result {
   margin-top: 14px; padding: 10px 12px;
   border: 1px solid var(--border); border-radius: 8px;

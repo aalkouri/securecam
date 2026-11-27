@@ -136,7 +136,7 @@ export function validateCamera(body, existing) {
   const host = str(body.host, 300);
   const requestedUrl = str(body.url);
   if ((isTest(host) || isClip(host)) && (type === 'reolink' || !requestedUrl)) {
-    return validateCamera({ ...body, type: 'generic', url: host, subUrl: body.subUrl || '' }, existing);
+    return validateCamera({ ...body, type: 'generic', url: host }, existing);
   }
 
   if (type === 'reolink') {
@@ -164,7 +164,10 @@ export function validateCamera(body, existing) {
     if (!file) throw new Error('Clip name must be a plain video filename, e.g. clip://sample.mp4');
     if (!fs.existsSync(file)) throw new Error(`No such clip in data/clips: ${url.slice(7)}`);
   }
-  const subUrl = unmask(str(body.subUrl), existing?.subUrl) || null;
+  // The form no longer exposes a low-res URL. Keep a stored one when an edit
+  // omits it, while still letting older API clients clear it explicitly.
+  const subUrlValue = body.subUrl === undefined ? existing?.subUrl || '' : str(body.subUrl);
+  const subUrl = unmask(subUrlValue, existing?.subUrl) || null;
   if (subUrl && !URL_SCHEMES.test(subUrl)) throw new Error('Low-res URL must start with rtsp://, rtsps://, http(s)://');
   return { name, type, enabled, url, subUrl };
 }
