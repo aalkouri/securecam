@@ -14,6 +14,7 @@ const when = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
 
 const tiles = new Map(); // id -> { el, player, camera }
 let editingId = null;
+let buildings = [];
 
 // Can this browser decode H.265 (what Reolink 4K main streams use)?
 const HEVC_CODEC = 'video/mp4; codecs="hvc1.1.6.L153.B0"';
@@ -121,6 +122,7 @@ function createTile(camera) {
   const el = tpl.content.firstElementChild.cloneNode(true);
   const tile = { el, camera, player: null };
   el.querySelector('.name').textContent = camera.name;
+  el.querySelector('.location').textContent = `${camera.buildingName || 'Unassigned'} / ${camera.roomName || 'Unassigned'}`;
   el.querySelector('.video-box').addEventListener('click', () => openFocus(tile.camera));
   el.querySelector('.tools').addEventListener('click', async (e) => {
     const action = e.target.closest('button')?.dataset.action;
@@ -157,6 +159,7 @@ async function refresh() {
     if (configKey(tile.camera) !== configKey(camera)) tile.el.dataset.state = '';
     tile.camera = camera;
     tile.el.querySelector('.name').textContent = camera.name;
+    tile.el.querySelector('.location').textContent = `${camera.buildingName || 'Unassigned'} / ${camera.roomName || 'Unassigned'}`;
     renderStatus(tile);
   }
   for (const [id, tile] of tiles) {
@@ -288,12 +291,84 @@ function showTypeFields() {
 }
 field('cam-type').addEventListener('change', showTypeFields);
 
-function openDialog(camera) {
+async function loadPlacements() {
+  const data = await api('/api/placements');
+  buildings = data.buildings || [];
+  const select = field('cam-building');
+  const previous = select.value;
+  select.innerHTML = [
+    ...buildings.map((b) => `<option value="${esc(b.id)}">${esc(b.name)}</option>`),
+    '<option value="__new__">+ Create new building…</option>',
+  ].join('');
+  if (previous && [...select.options].some((option) => option.value === previous)) select.value = previous;
+  else select.value = buildings[0]?.id || '__new__';
+  setRoomOptions(select.value === '__new__' ? '' : select.value);
+}
+
+function setRoomOptions(buildingId, selectedId = '') {
+  const select = field('cam-room');
+  const building = buildings.find((b) => b.id === buildingId);
+  const rooms = building?.rooms || [];
+  select.innerHTML = [
+    '<option value="">Choose a room…</option>',
+    ...rooms.map((room) => `<option value="${esc(room.id)}">${esc(room.name)}</option>`),
+    ...(building ? ['<option value="__new__">+ Create new room…</option>'] : []),
+  ].join('');
+  select.value = rooms.some((room) => room.id === selectedId) ? selectedId : '';
+  updatePlacementFields();
+}
+
+function updatePlacementFields() {
+  const creatingBuilding = field('cam-building').value === '__new__';
+  const creatingRoom = creatingBuilding || field('cam-room').value === '__new__';
+  field('cam-new-building').classList.toggle('hidden', !creatingBuilding);
+  field('cam-new-building').required = creatingBuilding;
+  field('cam-room').disabled = creatingBuilding;
+  field('cam-room').required = !creatingBuilding;
+  field('cam-new-room').classList.toggle('hidden', !creatingRoom);
+  field('cam-new-room').required = creatingRoom;
+}
+
+field('cam-building').addEventListener('change', () => {
+  const buildingId = field('cam-building').value;
+  if (buildingId === '__new__') {
+    field('cam-room').innerHTML = '<option value="">Choose a room…</option>';
+    updatePlacementFields();
+  } else {
+    setRoomOptions(buildingId);
+  }
+});
+field('cam-room').addEventListener('change', updatePlacementFields);
+
+async function openDialog(camera) {
   editingId = camera?.id || null;
   camError.textContent = '';
   testResult.classList.add('hidden');
   field('dialog-title').textContent = camera ? 'Edit camera' : 'Add camera';
   field('cam-delete').classList.toggle('hidden', !camera);
+  if (!buildings.length) {
+    try {
+      await loadPlacements();
+    } catch (err) {
+      camError.textContent = err.message;
+    }
+  }
+  const buildingSelect = field('cam-building');
+  if (!buildingSelect.options.length) {
+    buildingSelect.innerHTML = '<option value="__new__">+ Create new building…</option>';
+  }
+  const buildingId = camera?.buildingId && buildings.some((b) => b.id === camera.buildingId)
+    ? camera.buildingId
+    : (buildings[0]?.id || '__new__');
+  buildingSelect.value = buildingId;
+  field('cam-new-building').value = '';
+  field('cam-new-room').value = '';
+  if (buildingId === '__new__') {
+    field('cam-room').innerHTML = '<option value="">Choose a room…</option>';
+    updatePlacementFields();
+  } else {
+    setRoomOptions(buildingId, camera?.roomId || '');
+  }
   field('cam-name').value = camera?.name || '';
   field('cam-type').value = camera?.type || 'reolink';
   field('cam-host').value = camera?.host || '';
@@ -309,10 +384,18 @@ function openDialog(camera) {
 }
 
 function formPayload() {
+  const buildingId = field('cam-building').value;
+  const roomId = field('cam-room').value;
+  const creatingBuilding = buildingId === '__new__';
+  const creatingRoom = creatingBuilding || roomId === '__new__';
   return {
     id: editingId || undefined,
     name: field('cam-name').value,
     type: field('cam-type').value,
+    buildingId: creatingBuilding ? '' : buildingId,
+    roomId: creatingRoom ? '' : roomId,
+    newBuilding: creatingBuilding ? field('cam-new-building').value.trim() : '',
+    newRoom: creatingRoom ? field('cam-new-room').value.trim() : '',
     host: field('cam-host').value,
     port: field('cam-port').value,
     username: field('cam-username').value,
@@ -366,6 +449,7 @@ camForm.addEventListener('submit', async (e) => {
     } else {
       await api('/api/cameras', { method: 'POST', body: JSON.stringify(formPayload()) });
     }
+    try { await loadPlacements(); } catch { /* the next dialog will retry */ }
     dialog.close();
     refresh();
   } catch (err) {
@@ -621,5 +705,6 @@ async function pollAlerts() {
 pollAlerts();
 setInterval(pollAlerts, 5000);
 
+loadPlacements().catch(() => { /* openDialog retries when needed */ });
 refresh();
 setInterval(refresh, 3000);

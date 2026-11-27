@@ -106,7 +106,9 @@ main { padding: 20px; }
   color: var(--muted); font-size: 14px; text-align: center; padding: 20px; white-space: pre-line;
 }
 .tile .bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; gap: 8px; }
+.tile .labels { min-width: 0; display: flex; flex-direction: column; }
 .tile .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile .location { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile .bar .tools { display: flex; gap: 6px; }
 
 .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
@@ -146,7 +148,9 @@ select {
 }
 .row-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
 .row-2 > div:only-child { grid-column: 1 / -1; }
+.placement-row { grid-template-columns: 1fr 1fr; }
 #fields-reolink .row-2:nth-of-type(2) { grid-template-columns: 1fr 1fr; }
+.placement-row input[type=text] { margin-top: 6px; }
 .test-result {
   margin-top: 14px; padding: 10px 12px;
   border: 1px solid var(--border); border-radius: 8px;

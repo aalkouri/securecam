@@ -18,6 +18,9 @@ import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
   listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots,
   consolidateAlerts, pruneOldAlerts, closeDatabase,
+  listBuildings, createBuilding, createRoom, resolveCameraPlacement,
+  setCameraPlacement, deleteCameraPlacement, getCameraPlacements,
+  ensureCameraPlacements,
 } from './database.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -62,17 +65,23 @@ app.get('/api/setup', (req, res) => res.json({ setupComplete: isSetupComplete() 
 
 app.post('/api/setup', (req, res) => {
   if (isSetupComplete()) return res.status(409).json({ error: 'Setup already completed' });
-  const { username, password } = req.body || {};
+  const { username, password, building } = req.body || {};
   if (!username || typeof username !== 'string' || username.length > 64) {
     return res.status(400).json({ error: 'Username is required' });
   }
   if (!password || typeof password !== 'string' || password.length < 7) {
     return res.status(400).json({ error: 'Password must be at least 7 characters' });
   }
+  let createdBuilding;
+  try {
+    createdBuilding = createBuilding(building);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
   createAdmin(username.trim(), password);
   req.session.regenerate(() => {
     req.session.user = username.trim();
-    res.json({ ok: true });
+    res.json({ ok: true, building: createdBuilding });
   });
 });
 
@@ -116,15 +125,45 @@ app.use(express.static(publicDir));
 
 app.get('/api/me', (req, res) => res.json({ user: req.session.user }));
 
-function viewCamera(cam) {
-  return publicCamera(cam, { status: streams.status(cam.id, 'grid') });
+// ----- building / room placement -----
+app.get('/api/placements', (req, res) => res.json({ buildings: listBuildings() }));
+
+app.post('/api/buildings', (req, res) => {
+  try {
+    res.status(201).json(createBuilding(req.body?.name));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/buildings/:id/rooms', (req, res) => {
+  try {
+    res.status(201).json(createRoom(req.params.id, req.body?.name));
+  } catch (err) {
+    res.status(err.message === 'Building not found' ? 404 : 400).json({ error: err.message });
+  }
+});
+
+function viewCamera(cam, placements) {
+  const map = placements || getCameraPlacements();
+  const place = map.get(cam.id) || {};
+  return publicCamera(cam, {
+    status: streams.status(cam.id, 'grid'),
+    buildingId: place.buildingId || null,
+    buildingName: place.buildingName || null,
+    roomId: place.roomId || null,
+    roomName: place.roomName || null,
+  });
 }
 
 function findCamera(id) {
   return getCameras().find((c) => c.id === id);
 }
 
-app.get('/api/cameras', (req, res) => res.json(getCameras().map(viewCamera)));
+app.get('/api/cameras', (req, res) => {
+  const placements = getCameraPlacements();
+  res.json(getCameras().map((cam) => viewCamera(cam, placements)));
+});
 
 // Check a camera's settings before saving: connects and reports what it sends.
 app.post('/api/cameras/test', async (req, res) => {
@@ -142,10 +181,13 @@ app.post('/api/cameras/test', async (req, res) => {
 
 app.post('/api/cameras', (req, res) => {
   try {
-    const cam = { id: crypto.randomUUID(), ...validateCamera(req.body || {}) };
+    const validated = validateCamera(req.body || {});
+    const placement = resolveCameraPlacement(req.body || {});
+    const cam = { id: crypto.randomUUID(), ...validated, ...placement };
     const cameras = getCameras();
     cameras.push(cam);
     saveCameras(cameras);
+    setCameraPlacement(cam.id, placement);
     if (cam.enabled) streams.startCamera(cam);
     res.status(201).json(viewCamera(cam));
   } catch (err) {
@@ -158,9 +200,12 @@ app.put('/api/cameras/:id', (req, res) => {
   const idx = cameras.findIndex((c) => c.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Camera not found' });
   try {
-    const cam = { id: cameras[idx].id, ...validateCamera(req.body || {}, cameras[idx]) };
+    const validated = validateCamera(req.body || {}, cameras[idx]);
+    const placement = resolveCameraPlacement(req.body || {}, getCameraPlacements().get(cameras[idx].id));
+    const cam = { id: cameras[idx].id, ...validated, ...placement };
     cameras[idx] = cam;
     saveCameras(cameras);
+    setCameraPlacement(cam.id, placement);
     if (cam.enabled) streams.startCamera(cam); else streams.stopCamera(cam.id);
     res.json(viewCamera(cam));
   } catch (err) {
@@ -174,6 +219,7 @@ app.delete('/api/cameras/:id', (req, res) => {
   if (next.length === cameras.length) return res.status(404).json({ error: 'Camera not found' });
   streams.stopCamera(req.params.id);
   saveCameras(next);
+  deleteCameraPlacement(req.params.id);
   res.json({ ok: true });
 });
 
@@ -342,10 +388,15 @@ const snapshotCleanup = cleanupSnapshots();
 if (snapshotCleanup.deduped || snapshotCleanup.orphans) {
   console.log(`Snapshots: removed ${snapshotCleanup.deduped} duplicates and ${snapshotCleanup.orphans} unused files`);
 }
+const cameras = getCameras();
+const placementMigration = ensureCameraPlacements(cameras.map((cam) => cam.id));
+if (placementMigration.fabricated && placementMigration.added) {
+  console.log(`Placement: created ${placementMigration.building.name} / Default Room for ${placementMigration.added} existing camera(s)`);
+}
 cleanupAlerts();
 setInterval(cleanupAlerts, 60 * 60 * 1000).unref();
 startArchiveJob();
-for (const cam of getCameras()) if (cam.enabled) streams.startCamera(cam);
+for (const cam of cameras) if (cam.enabled) streams.startCamera(cam);
 detection.start();
 
 const server = app.listen(PORT, HOST, () => {

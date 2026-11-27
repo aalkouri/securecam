@@ -20,10 +20,12 @@ form.addEventListener('submit', async (e) => {
     return;
   }
 
+  const body = { username, password };
+  if (mode === 'setup') body.building = form.building.value.trim();
   const res = await fetch(mode === 'setup' ? '/api/setup' : '/api/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify(body),
   });
   if (res.ok) {
     location.replace('/');
