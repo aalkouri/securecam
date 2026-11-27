@@ -65,6 +65,9 @@ query:
   account was never confirmed, its password is dropped first.
 - The session cookie is `SameSite=Lax` (not Strict) so it survives the return
   from Google and links opened from email.
+- **Alert archives are not per-account yet.** The daily archive bundles every
+  account's alert clips into one file, so the archive routes are admin-only
+  and other accounts get an empty list. Splitting archives by owner is open.
 - Secrets (Google client secret, Resend key) live in `data/config.json` or env
   vars. **Never in the repo: it is public.** See the comment in `config.js`
   for the file's shape. `MAIL_LOG=1` prints emails to the log for testing.

@@ -84,7 +84,8 @@ export function registerAccountRoutes(app, publicDir) {
       recordFailure(ip);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    if (!user.verified) {
+    // Without email there is no way to confirm an address, so it is not required.
+    if (!user.verified && mailEnabled) {
       return res.status(403).json({ error: 'Confirm your email first. Check your inbox for the link, or use "Forgot password" to get a new one.' });
     }
     clearFailures(ip);
@@ -109,9 +110,11 @@ export function registerAccountRoutes(app, publicDir) {
 
     const existing = findByEmail(email);
     if (!mailEnabled) {
-      // No way to confirm an address (home install without email set up).
+      // No way to confirm an address (home install without email set up). The
+      // account stays unconfirmed, so if its real owner later arrives through
+      // Google or a reset link, this password is dropped rather than trusted.
       if (existing) return res.status(409).json({ error: 'That email already has an account' });
-      const user = createUser({ email, passwordHash: hashPassword(password), verified: true });
+      const user = createUser({ email, passwordHash: hashPassword(password) });
       return signIn(req, user, () => res.json({ ok: true, signedIn: true }));
     }
     // With email, answer the same way whether or not the address is known, so
