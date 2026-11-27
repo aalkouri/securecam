@@ -83,7 +83,8 @@
         <span class="floorplan-outside-label" id="floorplan-outside-label">Outside</span>
         <button type="button" class="plan-outside-add" id="floorplan-add-outside">+ Outside Camera</button>
         <div class="floorplan-outside-markers" id="floorplan-outside-markers"></div>
-        <div class="floorplan-building" id="floorplan-outline">
+        <div class="floorplan-building" id="floorplan-outline" role="group" tabindex="0"
+          aria-label="Building. Drag to move, corner icon to resize." title="Drag to move the building">
           <button type="button" class="floorplan-building-name" id="floorplan-outline-name" title="Rename building"></button>
           <div class="floorplan-rooms" id="floorplan-rooms"></div>
           <p class="floorplan-empty hidden" id="floorplan-empty">No rooms in this building yet. Add a room to start your layout.</p>
@@ -114,7 +115,7 @@
     </div>
   </div>
 
-  <!-- Five-second clip from an alert -->
+  <!-- Ten-second clip centered on an alert -->
   <div id="clip-modal" class="clip-modal hidden" role="dialog" aria-modal="true" aria-labelledby="clip-title">
     <div class="clip-panel">
       <div class="clip-bar">
@@ -331,7 +332,7 @@
 
   <template id="camera-marker-template">
     <div class="plan-camera" role="group" tabindex="0" aria-label="Camera. Click to view, top-left circle moves it, top-right circle rotates it.">
-      <button type="button" class="plan-camera-position" title="Move camera to next edge position" aria-label="Move camera to next edge position">⌖</button>
+      <button type="button" class="plan-camera-position" title="Move camera right to the next position" aria-label="Move camera right to the next position">→</button>
       <button type="button" class="plan-camera-rotate" title="Rotate camera clockwise" aria-label="Rotate camera clockwise">↻</button>
       <span class="plan-camera-icon" aria-hidden="true"><img src="/camera-marker.png" alt=""></span>
       <span class="plan-camera-name"></span>

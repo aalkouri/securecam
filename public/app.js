@@ -97,6 +97,7 @@ const noticeOk = document.getElementById('notice-ok');
 let cameraCounts = new Map();
 let activeRoomDrag = null;
 let activeRoomResize = null;
+let activeBuildingDrag = null;
 let activeBuildingResize = null;
 const planCameraEls = new Map(); // camera id -> floor-plan marker
 let renameTarget = null;
@@ -265,8 +266,7 @@ function selectCamera(id) {
   tile.selectTimer = setTimeout(() => tile.el.classList.remove('selected'), 1600);
   updateFeedHint();
   renderFloorplanCameras();
-  const top = grid.getBoundingClientRect().top + window.scrollY - 72;
-  window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  window.scrollTo(0, 0);
 }
 
 // A camera's stream config changed; the tile must reconnect.
@@ -654,6 +654,42 @@ function setRoomVars(el, layout) {
   el.style.setProperty('--h', h.toFixed(2));
 }
 
+function buildingLayoutOf(building) {
+  return {
+    x: Number(building?.planX ?? 12),
+    y: Number(building?.planY ?? 14),
+    w: Number(building?.planW ?? 80),
+    h: Number(building?.planH ?? 75),
+  };
+}
+
+function setBuildingVars(layout) {
+  planOutline.style.setProperty('--x', Number(layout.x).toFixed(2));
+  planOutline.style.setProperty('--y', Number(layout.y).toFixed(2));
+  planOutline.style.setProperty('--w', Number(layout.w).toFixed(2));
+  planOutline.style.setProperty('--h', Number(layout.h).toFixed(2));
+}
+
+function buildingLimits() {
+  const bounds = planBoard.getBoundingClientRect();
+  const style = getComputedStyle(planOutline);
+  const minW = Math.min(85, Math.max(20, ((parseFloat(style.minWidth) || 420) / bounds.width) * 100));
+  const minH = Math.min(80, Math.max(25, ((parseFloat(style.minHeight) || 360) / bounds.height) * 100));
+  return { minW, minH };
+}
+
+function constrainBuildingLayout(layout) {
+  const { minW, minH } = buildingLimits();
+  const x = planPercent(layout.x, 2, 100 - minW - 2);
+  const y = planPercent(layout.y, 8, 100 - minH - 2);
+  return {
+    x,
+    y,
+    w: planPercent(layout.w, minW, Math.min(85, 100 - x - 2)),
+    h: planPercent(layout.h, minH, Math.min(80, 100 - y - 2)),
+  };
+}
+
 function renderFloorplan() {
   const remembered = localStorage.getItem('securecam.building');
   const wanted = planSelect.value || remembered || buildings[0]?.id || '';
@@ -666,8 +702,7 @@ function renderFloorplan() {
   const building = currentPlanBuilding();
   planOutlineName.textContent = building?.name || '';
   planOutlineName.title = planOutlineName.textContent ? `Rename ${planOutlineName.textContent}` : 'Rename building';
-  planOutline.style.setProperty('--right', building?.planRight ?? 3);
-  planOutline.style.setProperty('--bottom', building?.planBottom ?? 3);
+  setBuildingVars(buildingLayoutOf(building));
   renderFloorplanRooms();
   renderFloorplanCameras();
 }
@@ -697,10 +732,9 @@ function roomFitsCameras(el, layout) {
 
 // The black outline may grow around its rooms, but it can never shrink across
 // a room or inside camera, cover an outside camera, or cover the outside button.
-function buildingFitsContents(right, bottom) {
+function buildingFitsContents(layout) {
   const original = planOutline.getAttribute('style');
-  planOutline.style.setProperty('--right', right);
-  planOutline.style.setProperty('--bottom', bottom);
+  setBuildingVars(layout);
   const box = planOutline.getBoundingClientRect();
   const contains = (other) => other.left >= box.left && other.right <= box.right
     && other.top >= box.top && other.bottom <= box.bottom;
@@ -726,30 +760,90 @@ function buildingFitsContents(right, bottom) {
   return ok;
 }
 
+async function saveBuildingLayout(building, layout) {
+  try {
+    const saved = await api(`/api/buildings/${encodeURIComponent(building.id)}/layout`, {
+      method: 'PUT', body: JSON.stringify({
+        planX: layout.x, planY: layout.y, planW: layout.w, planH: layout.h,
+      }),
+    });
+    building.planX = saved.planX;
+    building.planY = saved.planY;
+    building.planW = saved.planW;
+    building.planH = saved.planH;
+    building.planRight = saved.planRight;
+    building.planBottom = saved.planBottom;
+  } catch {
+    await loadPlacements().catch(() => {});
+  }
+}
+
+function startBuildingDrag(e) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  if (e.target.closest('button, .plan-resize, .plan-room, .plan-camera')) return;
+  e.preventDefault();
+  const building = currentPlanBuilding();
+  if (!building) return;
+  const origin = constrainBuildingLayout(buildingLayoutOf(building));
+  activeBuildingDrag = {
+    id: e.pointerId, bounds: planBoard.getBoundingClientRect(),
+    origin, current: origin, moved: false,
+  };
+  planOutline.classList.add('dragging');
+  planOutline.setPointerCapture?.(e.pointerId);
+
+  const onMove = (ev) => {
+    const state = activeBuildingDrag;
+    if (!state || ev.pointerId !== state.id) return;
+    const wanted = constrainBuildingLayout({
+      ...state.origin,
+      x: state.origin.x + (ev.clientX - e.clientX) / state.bounds.width * 100,
+      y: state.origin.y + (ev.clientY - e.clientY) / state.bounds.height * 100,
+    });
+    if (!buildingFitsContents(wanted)) return;
+    state.current = wanted;
+    state.moved = true;
+  };
+
+  const onEnd = (ev) => {
+    const state = activeBuildingDrag;
+    if (!state || ev.pointerId !== state.id) return;
+    planOutline.removeEventListener('pointermove', onMove);
+    planOutline.removeEventListener('pointerup', onEnd);
+    planOutline.removeEventListener('pointercancel', onEnd);
+    planOutline.releasePointerCapture?.(ev.pointerId);
+    planOutline.classList.remove('dragging');
+    activeBuildingDrag = null;
+    if (state.moved) saveBuildingLayout(building, state.current);
+  };
+
+  planOutline.addEventListener('pointermove', onMove);
+  planOutline.addEventListener('pointerup', onEnd);
+  planOutline.addEventListener('pointercancel', onEnd);
+}
+
 function startBuildingResize(e) {
   if (e.button !== 0 && e.pointerType === 'mouse') return;
   e.preventDefault();
   e.stopPropagation();
   const building = currentPlanBuilding();
   if (!building) return;
-  const bounds = planBoard.getBoundingClientRect();
-  const origin = {
-    right: Number(building.planRight ?? 3),
-    bottom: Number(building.planBottom ?? 3),
-  };
+  const origin = constrainBuildingLayout(buildingLayoutOf(building));
   activeBuildingResize = {
-    id: e.pointerId, bounds, origin, current: origin, moved: false,
+    id: e.pointerId, bounds: planBoard.getBoundingClientRect(),
+    origin, current: origin, moved: false,
   };
   planOutlineResize.setPointerCapture?.(e.pointerId);
 
   const onMove = (ev) => {
     const state = activeBuildingResize;
     if (!state || ev.pointerId !== state.id) return;
-    const wanted = {
-      right: planPercent(state.origin.right + (ev.clientX - e.clientX) / state.bounds.width * 100, 1, 60),
-      bottom: planPercent(state.origin.bottom + (ev.clientY - e.clientY) / state.bounds.height * 100, 1, 65),
-    };
-    if (!buildingFitsContents(wanted.right, wanted.bottom)) return;
+    const wanted = constrainBuildingLayout({
+      ...state.origin,
+      w: state.origin.w + (ev.clientX - e.clientX) / state.bounds.width * 100,
+      h: state.origin.h + (ev.clientY - e.clientY) / state.bounds.height * 100,
+    });
+    if (!buildingFitsContents(wanted)) return;
     state.current = wanted;
     state.moved = true;
   };
@@ -770,18 +864,25 @@ function startBuildingResize(e) {
   planOutlineResize.addEventListener('pointercancel', onEnd);
 }
 
-async function saveBuildingLayout(building, layout) {
-  try {
-    const saved = await api(`/api/buildings/${encodeURIComponent(building.id)}/layout`, {
-      method: 'PUT', body: JSON.stringify(layout),
-    });
-    building.planRight = saved.planRight;
-    building.planBottom = saved.planBottom;
-  } catch {
-    await loadPlacements().catch(() => {});
-  }
-}
-
+planOutline.addEventListener('pointerdown', startBuildingDrag);
+planOutline.addEventListener('keydown', (e) => {
+  if (e.target !== planOutline) return;
+  const step = e.shiftKey ? 5 : 1;
+  let dx = 0;
+  let dy = 0;
+  if (e.key === 'ArrowLeft') dx = -step;
+  else if (e.key === 'ArrowRight') dx = step;
+  else if (e.key === 'ArrowUp') dy = -step;
+  else if (e.key === 'ArrowDown') dy = step;
+  else return;
+  e.preventDefault();
+  const building = currentPlanBuilding();
+  if (!building) return;
+  const origin = constrainBuildingLayout(buildingLayoutOf(building));
+  const wanted = constrainBuildingLayout({ ...origin, x: origin.x + dx, y: origin.y + dy });
+  if (!buildingFitsContents(wanted)) return;
+  saveBuildingLayout(building, wanted);
+});
 planOutlineResize.addEventListener('pointerdown', startBuildingResize);
 planOutlineResize.addEventListener('keydown', (e) => {
   const step = e.shiftKey ? 5 : 1;
@@ -795,11 +896,9 @@ planOutlineResize.addEventListener('keydown', (e) => {
   e.preventDefault();
   const building = currentPlanBuilding();
   if (!building) return;
-  const wanted = {
-    right: planPercent((building.planRight ?? 3) + dx, 1, 60),
-    bottom: planPercent((building.planBottom ?? 3) + dy, 1, 65),
-  };
-  if (!buildingFitsContents(wanted.right, wanted.bottom)) return;
+  const origin = constrainBuildingLayout(buildingLayoutOf(building));
+  const wanted = constrainBuildingLayout({ ...origin, w: origin.w + dx, h: origin.h + dy });
+  if (!buildingFitsContents(wanted)) return;
   saveBuildingLayout(building, wanted);
 });
 
@@ -895,6 +994,37 @@ function spotIndex(spots, marker) {
     && Math.abs(spot.y - marker.y) < 0.6);
 }
 
+// The button shows where the next clockwise step goes: right along the top,
+// down the right side, left along the bottom, up the left side.
+const POSITION_ARROWS = ['→', '↓', '←', '↑'];
+const POSITION_DIRECTIONS = ['right', 'down', 'left', 'up'];
+
+function updateCameraPositionIcon(el, marker) {
+  const button = el.querySelector('.plan-camera-position');
+  if (!button) return;
+  const spots = el.parentElement === planOutsideMarkers
+    ? outsideCameraSpots(el)
+    : cameraEdgeSpots(el);
+  let index = spotIndex(spots, marker);
+  if (index < 0) {
+    let best = Infinity;
+    spots.forEach((spot, i) => {
+      const distance = (spot.x - marker.x) ** 2 + (spot.y - marker.y) ** 2;
+      if (distance < best) { best = distance; index = i; }
+    });
+  }
+  const spot = spots[Math.max(0, index)];
+  // The last top spot wraps back to the first one, so detect the side from
+  // coordinates instead of assuming three positions per side.
+  let edge = 3;
+  if (Math.abs(spot.y - spots[0].y) < 0.6) edge = 0;
+  else if (Math.abs(spot.x - spots[2].x) < 0.6) edge = 1;
+  else if (Math.abs(spot.y - spots[5].y) < 0.6) edge = 2;
+  button.textContent = POSITION_ARROWS[edge];
+  button.title = `Move camera ${POSITION_DIRECTIONS[edge]} to the next position`;
+  button.setAttribute('aria-label', button.title);
+}
+
 function spotIsFree(el, spot, rotation) {
   setMarkerVars(el, { ...spot, rotation });
   if (markerCollision(el)) return false;
@@ -924,7 +1054,10 @@ async function rotateCameraMarker(id) {
   const marker = markerOf(camera);
   const saved = await saveCameraMarker(id, { ...marker, rotation: (marker.rotation + 45) % 360 });
   const el = planCameraEls.get(id);
-  if (saved && el) setMarkerVars(el, saved);
+  if (saved && el) {
+    setMarkerVars(el, saved);
+    updateCameraPositionIcon(el, saved);
+  }
 }
 
 // The top-left circle steps the marker through its twelve edge positions.
@@ -947,10 +1080,13 @@ async function cycleCameraPosition(id) {
   }
   if (!chosen) {
     setMarkerVars(el, marker);
+    updateCameraPositionIcon(el, marker);
     return;
   }
   const saved = await saveCameraMarker(id, { ...chosen, rotation: marker.rotation });
-  setMarkerVars(el, saved || marker);
+  const final = saved || marker;
+  setMarkerVars(el, final);
+  updateCameraPositionIcon(el, final);
 }
 
 function makeCameraMarker(camera) {
@@ -959,6 +1095,9 @@ function makeCameraMarker(camera) {
   el.querySelector('.plan-camera-name').textContent = camera.name;
   const position = el.querySelector('.plan-camera-position');
   const rotate = el.querySelector('.plan-camera-rotate');
+  // Keep the room's drag handler from capturing pointer events on the marker;
+  // a plain click on the icon or name must be able to select this camera.
+  el.addEventListener('pointerdown', (e) => e.stopPropagation());
   for (const button of [position, rotate]) {
     button.addEventListener('pointerdown', (e) => e.stopPropagation());
   }
@@ -979,7 +1118,7 @@ function makeCameraMarker(camera) {
 }
 
 function renderFloorplanCameras() {
-  if (activeBuildingResize) return;
+  if (activeBuildingDrag || activeBuildingResize) return;
   const building = currentPlanBuilding();
   const rooms = [...planRoomsEl.querySelectorAll('.plan-room')];
   const seen = new Set();
@@ -999,7 +1138,9 @@ function renderFloorplanCameras() {
     if (el.parentElement !== parent) parent.appendChild(el);
     el.querySelector('.plan-camera-name').textContent = camera.name;
     el.classList.toggle('active', camera.id === selectedCameraId);
-    setMarkerVars(el, markerOf(camera));
+    const marker = markerOf(camera);
+    setMarkerVars(el, marker);
+    updateCameraPositionIcon(el, marker);
   }
   for (const [id, el] of planCameraEls) {
     if (!seen.has(id)) {
@@ -1035,7 +1176,7 @@ function handleCameraKeys(e, id, el) {
 window.addEventListener('resize', () => {
   clearTimeout(planResizeTimer);
   planResizeTimer = setTimeout(() => {
-    if (!activeRoomDrag && !activeRoomResize && !activeBuildingResize) {
+    if (!activeRoomDrag && !activeRoomResize && !activeBuildingDrag && !activeBuildingResize) {
       renderFloorplanRooms();
       renderFloorplanCameras();
     }
@@ -1104,7 +1245,7 @@ async function saveRoomLayout(room, layout) {
 
 function startRoomDrag(e, room, el) {
   if (e.button !== 0 && e.pointerType === 'mouse') return;
-  if (e.target.closest('button')) return;
+  if (e.target.closest('button, .plan-camera')) return;
   e.preventDefault();
   const bounds = planRoomsEl.getBoundingClientRect();
   const limits = planLimits();
@@ -1243,8 +1384,7 @@ planSelect.addEventListener('change', () => {
   const building = currentPlanBuilding();
   planOutlineName.textContent = building?.name || '';
   planOutlineName.title = planOutlineName.textContent ? `Rename ${planOutlineName.textContent}` : 'Rename building';
-  planOutline.style.setProperty('--right', building?.planRight ?? 3);
-  planOutline.style.setProperty('--bottom', building?.planBottom ?? 3);
+  setBuildingVars(buildingLayoutOf(building));
   renderFloorplanRooms();
   renderFloorplanCameras();
 });
@@ -1584,6 +1724,8 @@ const clipClose = document.getElementById('clip-close');
 let lastAlertId = null;
 let latestAlerts = [];
 let activeClipAlert = null;
+// Alert clips are ten seconds long, centered on the moment the alert fired.
+const CLIP_CENTER_SECONDS = 5;
 
 const snapshotUrl = (name) => `/api/snapshots/${encodeURIComponent(name)}`;
 
@@ -1641,16 +1783,25 @@ function openClip(alert) {
   clipStill.classList.toggle('hidden', playable || !hasStill);
   clipStill.src = hasStill ? snapshotUrl(alert.snapshot) : '';
   clipNote.textContent = alert.note
-    || (playable ? 'Latest 5-second 1080p clip from this alert.'
+    || (playable ? '10-second 1080p clip: five seconds before and after the alert.'
       : hasStill ? 'No clip was saved for this alert.' : 'No media was saved for this alert.');
   clipModal.classList.remove('hidden');
   if (playable) {
+    clipVideo.addEventListener('loadedmetadata', seekToAlertTime);
     clipVideo.src = alert.clipUrl || `/api/alerts/${alert.id}/clip`;
     clipVideo.play()?.catch(() => {});
   }
 }
 
+// Start playback at the alert itself; the player still allows scrubbing back to
+// the five seconds that led up to it.
+function seekToAlertTime() {
+  if (!Number.isFinite(clipVideo.duration)) return;
+  clipVideo.currentTime = Math.min(CLIP_CENTER_SECONDS, Math.max(0, clipVideo.duration - 0.1));
+}
+
 function closeClip() {
+  clipVideo.removeEventListener('loadedmetadata', seekToAlertTime);
   clipVideo.pause();
   clipVideo.removeAttribute('src');
   clipVideo.load();
@@ -1770,7 +1921,7 @@ archiveClips.addEventListener('click', (e) => {
     snapshot: clip.snapshot,
     hasClip: true,
     clipUrl: clip.clipUrl,
-    note: `Archived alert clip from ${activeArchiveDate}.`,
+    note: `Archived 10-second alert clip from ${activeArchiveDate}, centered on the alert.`,
   });
 });
 

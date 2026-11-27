@@ -1,7 +1,7 @@
 // Save a short, browser-playable MP4 for each alert. The always-on grid stream
 // is a rolling low-res buffer; a full-quality variant is started on demand when
-// an alert happens. Clips are capped at 1080p so five seconds costs about
-// 1–2 MB instead of 12 MB at full 4K.
+// an alert happens. Clips are capped at 1080p and cover ten seconds around the
+// alert: five seconds before it and five seconds after it.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,7 +15,12 @@ const CLIP_VIDEO = [
   '-vf', "scale='min(1920,iw)':-2", '-r', '30', '-an',
   '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
 ];
-const CLIP_SECONDS = 5;
+const CLIP_SECONDS = 10;
+// HLS segments are two seconds. Starting four segments back and dropping the
+// first three seconds leaves exactly five seconds before the alert, then
+// records five seconds after it.
+const HLS_START_INDEX = -4;
+const HLS_SKIP_SECONDS = 3;
 const CLIP_TIMEOUT_MS = 45_000;
 
 function inputArgs(url) {
@@ -79,6 +84,7 @@ async function recordHls(playlist, temp, startIndex) {
     '-hide_banner', '-loglevel', 'error', '-y',
     '-live_start_index', String(startIndex),
     '-i', playlist,
+    '-ss', String(HLS_SKIP_SECONDS),
     '-t', String(CLIP_SECONDS),
     '-map', '0:v:0', ...CLIP_VIDEO, '-movflags', '+faststart',
     temp,
@@ -107,14 +113,14 @@ async function sourceFor(camera) {
   const variant = await streams.hdVariantFor(camera, false).catch(() => null);
   if (!variant) {
     const dir = path.join(STREAM_DIR, `${camera.id}_grid`);
-    return { playlist: path.join(dir, 'index.m3u8'), startIndex: -3, waitDir: dir };
+    return { playlist: path.join(dir, 'index.m3u8'), startIndex: HLS_START_INDEX, waitDir: dir };
   }
   const { key } = streams.ensure(camera, variant);
   const live = await streams.waitLive(key, 20_000);
   if (!live) throw new Error('Full-quality stream did not start in time');
   const dir = path.join(STREAM_DIR, key);
-  await waitForSegments(dir, 3);
-  return { playlist: path.join(dir, 'index.m3u8'), startIndex: -3, waitDir: dir };
+  await waitForSegments(dir, 4);
+  return { playlist: path.join(dir, 'index.m3u8'), startIndex: HLS_START_INDEX, waitDir: dir };
 }
 
 export async function recordAlertClip(camera, output) {

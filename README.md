@@ -58,12 +58,12 @@ above the feed explains this. The stream tools no longer include a restart
 button.
 
 Below the streams is an interactive floor plan on a grass-textured board. Use
-the **Building** drop-down to switch buildings. The black building outline has
-its own corner handle: dragging it resizes only the outline, never the grass or
-the reserved outside area, and it will not pass over a room, a camera marker or
-the outside controls. Drag rooms to rearrange them, or drag the corner icon to
-resize them; arrow keys also nudge a focused room or handle. Camera markers are
-no longer dragged. The top-left circle on a marker steps the camera clockwise
+the **Building** drop-down to switch buildings. Drag the black building outline
+to move it, or use its corner handle to resize it; arrow keys nudge a focused
+outline or handle. It never covers a camera marker, the fixed **Outside** label
+or the **+ Outside Camera** button. Drag rooms to rearrange them, or drag the
+corner icon to resize them; arrow keys also nudge a focused room or handle.
+Camera markers are no longer dragged. The top-left circle on a marker steps the camera clockwise
 through twelve evenly spaced edge positions (three per side, never a corner),
 and the top-right circle rotates it 45°. Clicking anywhere else on the marker
 or its name selects that camera and shows its feed above. Click the building
@@ -76,9 +76,10 @@ a camera marker. Positions and sizes are saved per room in SQLite.
 
 Creating a camera adds a marker with its name underneath. Its top-left circle
 steps it clockwise through twelve edge positions (three per side, starting at
-the top middle); outside cameras use the same pattern just outside the building
-walls. Clicking anywhere else on the marker or its name replaces the feed above
-with that camera and scrolls it into view. The active marker is outlined. The
+the top middle); its arrow shows which way the next step goes — right on the top,
+down on the right, left on the bottom and up on the left. Outside cameras use
+the same pattern just outside the building walls. Clicking anywhere else on the marker or its name replaces the feed above
+with that camera and scrolls to the top of the page. The active marker is outlined. The
 round button at a marker's top right rotates it clockwise 45° per click — eight
 clicks make a full 360°. Markers may not overlap each other, the fixed
 **Outside** label in the top-left or the **+ Outside Camera** button in the
@@ -157,7 +158,8 @@ objects are given a permanent ID such as `CAR-0001`; click **Detection** in the
 header to rename one and browse its sightings. Alerts live on the camera
 dashboard under the **Alerts** button, with messages like
 *"Blue truck showed up in camera Driveway"*. Clicking an alert plays the saved
-five-second clip from that camera.
+ten-second clip from that camera, starting at the alert with five seconds before
+and five seconds after it available on the timeline.
 
 To keep single glimpses from becoming noise, an object is only shown and only
 raises an alert once it has been seen **more than twice** (3 sightings). It is
@@ -199,11 +201,12 @@ clips without exposing a download. Archive days older than **30 days** are
 removed automatically.
 
 Each enabled camera is always recording a rolling **10-minute grid buffer**.
-When an alert happens, SecureCam saves a **five-second 1080p clip from that
-camera's full-quality stream** and links it to the alert. The buffer uses
-roughly 0.5–1 Mbps per camera; with 2–4 cameras the ten-minute window stays well
-under 1 GB. A 1080p alert clip is typically **1–2 MB** instead of 12 MB at 4K;
-the newest clip replaces the old one when an alert group grows.
+When an alert happens, SecureCam saves a **ten-second 1080p clip from that
+camera's full-quality stream** — five seconds before the alert and five seconds
+after it — and links it to the alert. The buffer uses roughly 0.5–1 Mbps per
+camera; with 2–4 cameras the ten-minute window stays well under 1 GB. A 1080p
+alert clip is typically **2–4 MB** instead of 24 MB at 4K; the newest clip
+replaces the old one when an alert group grows.
 
 On first run the app downloads four small models (~36 MB total) into
 `data/models/` and verifies their checksums. Snapshots and the SQLite database

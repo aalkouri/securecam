@@ -154,6 +154,20 @@ ensureColumn('rooms', 'w', 'REAL');
 ensureColumn('rooms', 'h', 'REAL');
 ensureColumn('buildings', 'plan_right', 'REAL NOT NULL DEFAULT 3');
 ensureColumn('buildings', 'plan_bottom', 'REAL NOT NULL DEFAULT 3');
+// Buildings can be moved as well as resized. Keep the old right/bottom insets
+// for compatibility, but store the outline as x/y/w/h like rooms.
+const addedBuildingPosition = !db.prepare('PRAGMA table_info(buildings)').all()
+  .some((column) => column.name === 'plan_x');
+ensureColumn('buildings', 'plan_x', 'REAL NOT NULL DEFAULT 12');
+ensureColumn('buildings', 'plan_y', 'REAL NOT NULL DEFAULT 14');
+ensureColumn('buildings', 'plan_w', 'REAL NOT NULL DEFAULT 76');
+ensureColumn('buildings', 'plan_h', 'REAL NOT NULL DEFAULT 72');
+if (addedBuildingPosition) {
+  // Leave a margin around older outlines so they can actually be dragged.
+  db.exec(`UPDATE buildings SET
+    plan_w = MIN(80, MAX(25, 100 - plan_x - plan_right)),
+    plan_h = MIN(75, MAX(25, 100 - plan_y - plan_bottom))`);
+}
 
 // Camera markers are new. Older installs had a required room and no marker
 // position, so rebuild that table once while keeping every camera id.
@@ -235,10 +249,12 @@ db.exec('UPDATE alerts SET last_seen_at = created_at WHERE last_seen_at IS NULL'
 // controls. The browser enforces an even stricter minimum based on its own
 // font sizes; these are the database's hard limits.
 const ROOM_LIMITS = { minY: 10, minW: 14, minH: 18 };
-// The building outline keeps the top-left corner fixed; only its right and
-// bottom edges move inwards from the grass area. These are hard limits; the
-// browser applies stricter pixel limits based on the actual board size.
-const BUILDING_LIMITS = { minRight: 2, maxRight: 60, minBottom: 2, maxBottom: 65 };
+// The building outline can move and resize inside the grass board. These are
+// hard server limits; the browser applies stricter pixel limits based on the
+// actual board and its controls.
+const BUILDING_LIMITS = {
+  minX: 2, minY: 8, minW: 25, maxW: 85, minH: 25, maxH: 80, edge: 2,
+};
 
 // Default floor-plan slots. Rooms are percentages of the building square, so
 // a plan looks the same on a laptop and a phone. A few rooms sit in a loose
@@ -365,6 +381,7 @@ function ownsBuilding(buildingId, ownerId) {
 
 export function listBuildings(ownerId) {
   const buildings = db.prepare(`SELECT id, name, created_at AS createdAt,
+    plan_x AS planX, plan_y AS planY, plan_w AS planW, plan_h AS planH,
     plan_right AS planRight, plan_bottom AS planBottom
     FROM buildings WHERE owner_id = ? ORDER BY name COLLATE NOCASE`).all(ownerId);
   const rooms = db.prepare(`SELECT id, building_id AS buildingId, name, created_at AS createdAt,
@@ -374,6 +391,12 @@ export function listBuildings(ownerId) {
     id: building.id,
     name: building.name,
     createdAt: building.createdAt,
+    planX: building.planX,
+    planY: building.planY,
+    planW: building.planW,
+    planH: building.planH,
+    planRight: building.planRight,
+    planBottom: building.planBottom,
     rooms: rooms.filter((room) => room.buildingId === building.id)
       .map(({ buildingId, ...room }) => room),
   }));
@@ -384,7 +407,7 @@ export function createBuilding(value, ownerId) {
   if (db.prepare('SELECT 1 FROM buildings WHERE owner_id = ? AND name COLLATE NOCASE = ?').get(ownerId, name)) {
     throw new Error('A building with that name already exists');
   }
-  const building = { id: crypto.randomUUID(), name };
+  const building = { id: crypto.randomUUID(), name, ...normalizeBuildingLayout({}) };
   db.prepare('INSERT INTO buildings (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)')
     .run(building.id, ownerId, building.name, new Date().toISOString());
   return { ...building, rooms: [] };
@@ -424,21 +447,30 @@ export function updateRoomLayout(roomId, ownerId, layout = {}) {
 }
 
 function normalizeBuildingLayout(layout = {}) {
-  const right = clamp(layout.planRight ?? layout.right, BUILDING_LIMITS.minRight,
-    BUILDING_LIMITS.maxRight, 3);
-  const bottom = clamp(layout.planBottom ?? layout.bottom, BUILDING_LIMITS.minBottom,
-    BUILDING_LIMITS.maxBottom, 3);
-  return { planRight: right, planBottom: bottom };
+  const edge = BUILDING_LIMITS.edge;
+  const x = clamp(layout.planX ?? layout.x, BUILDING_LIMITS.minX, 100 - BUILDING_LIMITS.minW - edge, 12);
+  const y = clamp(layout.planY ?? layout.y, BUILDING_LIMITS.minY, 100 - BUILDING_LIMITS.minH - edge, 14);
+  const w = clamp(layout.planW ?? layout.w, BUILDING_LIMITS.minW,
+    Math.min(BUILDING_LIMITS.maxW, 100 - x - edge), 76);
+  const h = clamp(layout.planH ?? layout.h, BUILDING_LIMITS.minH,
+    Math.min(BUILDING_LIMITS.maxH, 100 - y - edge), 72);
+  return {
+    planX: x, planY: y, planW: w, planH: h,
+    planRight: Number((100 - x - w).toFixed(2)),
+    planBottom: Number((100 - y - h).toFixed(2)),
+  };
 }
 
-// Only the black outline resizes; the grass board and its outside camera stay
-// where they are. Ownership is checked before anything is written.
+// The black outline can move and resize; the grass board stays where it is.
+// Ownership is checked before anything is written.
 export function updateBuildingLayout(buildingId, ownerId, layout = {}) {
   if (!ownsBuilding(buildingId, ownerId)) return null;
-  const { planRight, planBottom } = normalizeBuildingLayout(layout);
-  const result = db.prepare('UPDATE buildings SET plan_right = ?, plan_bottom = ? WHERE id = ?')
-    .run(planRight, planBottom, buildingId);
-  return result.changes ? { planRight, planBottom } : null;
+  const next = normalizeBuildingLayout(layout);
+  const result = db.prepare(`UPDATE buildings SET
+    plan_x = ?, plan_y = ?, plan_w = ?, plan_h = ?, plan_right = ?, plan_bottom = ?
+    WHERE id = ?`).run(next.planX, next.planY, next.planW, next.planH,
+    next.planRight, next.planBottom, buildingId);
+  return result.changes ? next : null;
 }
 
 export function renameBuilding(buildingId, ownerId, value) {
