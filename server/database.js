@@ -83,6 +83,9 @@ ensureColumn('objects', 'candidate_score', 'REAL');
 ensureColumn('alerts', 'clip', 'TEXT');
 ensureColumn('alerts', 'repeats', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('alerts', 'last_seen_at', 'TEXT');
+// Which account an object belongs to. Sightings and alerts belong to their
+// object's owner. Everything from before accounts belongs to the admin (id 1).
+ensureColumn('objects', 'owner_id', 'INTEGER NOT NULL DEFAULT 1');
 db.exec('UPDATE alerts SET last_seen_at = created_at WHERE last_seen_at IS NULL');
 
 const PREFIX = { car: 'CAR', truck: 'TRK', bus: 'BUS', person: 'PER', bicycle: 'BIK', motorcycle: 'MOT', cat: 'CAT', dog: 'DOG' };
@@ -140,16 +143,25 @@ const LATEST = `o.*,
 // Named objects have already been dealt with. They stay in the database and in
 // alerts, but only still-unnamed objects (including low-confidence possible
 // matches to a named person) appear here for review.
-export function listObjects(kind, all = false) {
+export function listObjects(ownerId, kind, all = false) {
   const named = all ? '' : 'AND o.named = 0';
   const rows = kind
-    ? db.prepare(`SELECT ${LATEST} FROM objects o WHERE kind = ? ${named} AND o.sightings >= ? ORDER BY last_seen_at DESC, created_at DESC`).all(kind, MIN_SIGHTINGS)
-    : db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.sightings >= ? ${named} ORDER BY last_seen_at DESC, created_at DESC`).all(MIN_SIGHTINGS);
+    ? db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.owner_id = ? AND kind = ? ${named} AND o.sightings >= ? ORDER BY last_seen_at DESC, created_at DESC`).all(ownerId, kind, MIN_SIGHTINGS)
+    : db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.owner_id = ? AND o.sightings >= ? ${named} ORDER BY last_seen_at DESC, created_at DESC`).all(ownerId, MIN_SIGHTINGS);
   return rows.map(objectRow);
 }
 
-export function getObject(id) {
-  return objectRow(db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.id = ?`).get(id));
+// With an ownerId, only that account's object is returned.
+export function getObject(id, ownerId = null) {
+  const row = db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.id = ?`).get(id);
+  if (row && ownerId !== null && row.owner_id !== ownerId) return null;
+  return objectRow(row);
+}
+
+// Whether a stored frame belongs to one of this account's sightings.
+export function ownsSnapshot(ownerId, name) {
+  return Boolean(db.prepare(`SELECT 1 FROM sightings s JOIN objects o ON o.id = s.object_id
+    WHERE s.snapshot = ? AND o.owner_id = ? LIMIT 1`).get(name, ownerId));
 }
 
 // Store each distinct frame once, named by its SHA-256. Looping test videos
@@ -242,8 +254,9 @@ function thresholdFor(row, kind) {
 }
 
 // Pick the closest known object that is confident enough to absorb this image.
-export function findMatch(kind, embedding, fingerprint) {
-  const candidates = db.prepare('SELECT * FROM objects WHERE kind = ? AND (embedding IS NOT NULL OR fingerprint IS NOT NULL)').all(kind);
+// Objects are only ever matched against the same account's objects.
+export function findMatch(ownerId, kind, embedding, fingerprint) {
+  const candidates = db.prepare('SELECT * FROM objects WHERE owner_id = ? AND kind = ? AND (embedding IS NOT NULL OR fingerprint IS NOT NULL)').all(ownerId, kind);
   let best = null;
   for (const row of candidates) {
     const score = scoreRow(row, kind, embedding, fingerprint);
@@ -255,10 +268,10 @@ export function findMatch(kind, embedding, fingerprint) {
 
 // If the closest known object is already named but only weakly similar, keep
 // this image as a new, unconfirmed candidate linked to that name.
-export function findReviewCandidate(kind, embedding, fingerprint) {
+export function findReviewCandidate(ownerId, kind, embedding, fingerprint) {
   if (kind !== 'person') return null;
   const candidates = db.prepare(`SELECT * FROM objects
-    WHERE kind = ? AND named = 1 AND embedding IS NOT NULL`).all(kind);
+    WHERE owner_id = ? AND kind = ? AND named = 1 AND embedding IS NOT NULL`).all(ownerId, kind);
   let best = null;
   for (const row of candidates) {
     const score = scoreRow(row, kind, embedding, fingerprint);
@@ -296,7 +309,7 @@ export function kindLabel(kind) {
   return LABEL[kind] || kind;
 }
 
-export function createObject(kind, embedding, fingerprint, candidate = null) {
+export function createObject(ownerId, kind, embedding, fingerprint, candidate = null) {
   const id = crypto.randomUUID();
   const prefix = PREFIX[kind] || 'OBJ';
   let n = db.prepare('SELECT COUNT(*) AS n FROM objects WHERE kind = ?').get(kind).n + 1;
@@ -310,11 +323,11 @@ export function createObject(kind, embedding, fingerprint, candidate = null) {
   // Start at 0: recordSighting() increments this, so the count always matches
   // the number of sighting rows and the "seen more than twice" gate is exact.
   db.prepare(`INSERT INTO objects(id, identifier, kind, name, created_at, last_seen_at, sightings,
-              embedding, fingerprint, candidate_of, candidate_score)
-              VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`)
+              embedding, fingerprint, candidate_of, candidate_score, owner_id)
+              VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`)
     .run(id, identifier, kind, name, now, now,
       embedding ? JSON.stringify(embedding) : null, fingerprint || null,
-      candidate?.objectId || null, candidate?.score ?? null);
+      candidate?.objectId || null, candidate?.score ?? null, ownerId);
   return getObject(id);
 }
 
@@ -370,9 +383,9 @@ function sightingRow(row) {
 const SIGHTING_SELECT = `SELECT s.*, o.name, o.identifier, o.kind FROM sightings s
                          JOIN objects o ON o.id = s.object_id`;
 
-export function listSightings({ objectId, cameraId, kind, limit = 60 } = {}) {
-  const where = ['o.sightings >= ?'];
-  const args = [MIN_SIGHTINGS];
+export function listSightings({ ownerId, objectId, cameraId, kind, limit = 60 } = {}) {
+  const where = ['o.owner_id = ?', 'o.sightings >= ?'];
+  const args = [ownerId, MIN_SIGHTINGS];
   if (objectId) { where.push('s.object_id = ?'); args.push(objectId); }
   if (cameraId) { where.push('s.camera_id = ?'); args.push(cameraId); }
   if (kind) { where.push('o.kind = ?'); args.push(kind); }
@@ -441,7 +454,7 @@ export function recordSighting({ object, camera, confidence, bbox, snapshot, see
 
 const ALERT_SELECT = `SELECT a.id, a.object_id, a.sighting_id, a.camera_id, a.camera_name,
   a.message, a.created_at, a.last_seen_at, a.repeats, a.ack, a.clip,
-  o.name, o.identifier, o.kind, s.snapshot
+  o.name, o.identifier, o.kind, o.owner_id, s.snapshot
   FROM alerts a JOIN objects o ON o.id = a.object_id
   LEFT JOIN sightings s ON s.id = a.sighting_id`;
 
@@ -466,15 +479,18 @@ function alertRow(row) {
   };
 }
 
-export function getAlert(id) {
-  return alertRow(db.prepare(`${ALERT_SELECT} WHERE a.id = ?`).get(id));
+// With an ownerId, only that account's alert is returned.
+export function getAlert(id, ownerId = null) {
+  const row = db.prepare(`${ALERT_SELECT} WHERE a.id = ?`).get(id);
+  if (row && ownerId !== null && row.owner_id !== ownerId) return null;
+  return alertRow(row);
 }
 
-export function listAlerts({ since = 0, limit = 50 } = {}) {
+export function listAlerts({ ownerId, since = 0, limit = 50 } = {}) {
   return db.prepare(`${ALERT_SELECT}
-    WHERE a.id > ? AND o.sightings >= ?
+    WHERE o.owner_id = ? AND a.id > ? AND o.sightings >= ?
     ORDER BY COALESCE(a.last_seen_at, a.created_at) DESC, a.id DESC LIMIT ?`)
-    .all(Number(since) || 0, MIN_SIGHTINGS, Math.min(Number(limit) || 50, 200))
+    .all(ownerId, Number(since) || 0, MIN_SIGHTINGS, Math.min(Number(limit) || 50, 200))
     .map(alertRow);
 }
 
@@ -531,21 +547,23 @@ export function pruneOldAlerts(maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
   return { alerts, clips };
 }
 
-export function ackAlerts(ids, all = false) {
-  if (all) return db.prepare('UPDATE alerts SET ack = 1 WHERE ack = 0').run().changes;
+const OWNED = 'object_id IN (SELECT id FROM objects WHERE owner_id = ?)';
+
+export function ackAlerts(ownerId, ids, all = false) {
+  if (all) return db.prepare(`UPDATE alerts SET ack = 1 WHERE ack = 0 AND ${OWNED}`).run(ownerId).changes;
   const list = Array.isArray(ids) ? ids.filter((id) => Number.isInteger(Number(id))).map(Number) : [];
   if (!list.length) return 0;
   const placeholders = list.map(() => '?').join(',');
-  return db.prepare(`UPDATE alerts SET ack = 1 WHERE id IN (${placeholders})`).run(...list).changes;
+  return db.prepare(`UPDATE alerts SET ack = 1 WHERE id IN (${placeholders}) AND ${OWNED}`).run(...list, ownerId).changes;
 }
 
-export function counts() {
+export function counts(ownerId) {
   return {
-    objects: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE sightings >= ? AND named = 0').get(MIN_SIGHTINGS).n,
-    tracked: db.prepare('SELECT COUNT(*) AS n FROM objects').get().n,
-    sightings: db.prepare(`SELECT COUNT(*) AS n FROM sightings s JOIN objects o ON o.id = s.object_id WHERE o.sightings >= ?`).get(MIN_SIGHTINGS).n,
-    alerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE o.sightings >= ?`).get(MIN_SIGHTINGS).n,
-    unreadAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE a.ack = 0 AND o.sightings >= ?`).get(MIN_SIGHTINGS).n,
+    objects: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE owner_id = ? AND sightings >= ? AND named = 0').get(ownerId, MIN_SIGHTINGS).n,
+    tracked: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE owner_id = ?').get(ownerId).n,
+    sightings: db.prepare(`SELECT COUNT(*) AS n FROM sightings s JOIN objects o ON o.id = s.object_id WHERE o.owner_id = ? AND o.sightings >= ?`).get(ownerId, MIN_SIGHTINGS).n,
+    alerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE o.owner_id = ? AND o.sightings >= ?`).get(ownerId, MIN_SIGHTINGS).n,
+    unreadAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE o.owner_id = ? AND a.ack = 0 AND o.sightings >= ?`).get(ownerId, MIN_SIGHTINGS).n,
   };
 }
 

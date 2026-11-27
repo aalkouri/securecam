@@ -5,10 +5,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSettings, getCameras, saveCameras } from './store.js';
-import {
-  isSetupComplete, createAdmin, checkLogin, requireAuth,
-  isLockedOut, recordFailure, clearFailures,
-} from './auth.js';
+import { isSetupComplete, requireAuth, requireAdmin } from './auth.js';
+import { registerAccountRoutes } from './accounts.js';
+import { adminId, closeUsers } from './users.js';
+import { assertCameraAllowed } from './guard.js';
 import { streams, STREAM_DIR, probe } from './streams.js';
 import { validateCamera, publicCamera, gridUrl, hdUrl } from './cameras.js';
 import { detection } from './detection.js';
@@ -16,7 +16,7 @@ import { ALERT_CLIP_DIR, removeAlertClip } from './clips.js';
 import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
   listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots,
-  consolidateAlerts, pruneOldAlerts, closeDatabase,
+  consolidateAlerts, pruneOldAlerts, closeDatabase, ownsSnapshot,
 } from './database.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -49,50 +49,14 @@ app.use(session({
   secret: getSettings().sessionSecret,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'strict', secure: BEHIND_PROXY, maxAge: 12 * 60 * 60 * 1000 },
+  // "lax" rather than "strict": the session has to survive coming back from
+  // Google's sign-in page and arriving from a link in an email.
+  cookie: { httpOnly: true, sameSite: 'lax', secure: BEHIND_PROXY, maxAge: 12 * 60 * 60 * 1000 },
 }));
 
 // ---------- public routes ----------
 const publicDir = path.join(ROOT, 'public');
-app.get(['/login.html', '/setup.html', '/style.css', '/login.js'], (req, res) =>
-  res.sendFile(path.join(publicDir, req.path)));
-
-app.get('/api/setup', (req, res) => res.json({ setupComplete: isSetupComplete() }));
-
-app.post('/api/setup', (req, res) => {
-  if (isSetupComplete()) return res.status(409).json({ error: 'Setup already completed' });
-  const { username, password } = req.body || {};
-  if (!username || typeof username !== 'string' || username.length > 64) {
-    return res.status(400).json({ error: 'Username is required' });
-  }
-  if (!password || typeof password !== 'string' || password.length < 7) {
-    return res.status(400).json({ error: 'Password must be at least 7 characters' });
-  }
-  createAdmin(username.trim(), password);
-  req.session.regenerate(() => {
-    req.session.user = username.trim();
-    res.json({ ok: true });
-  });
-});
-
-app.post('/api/login', (req, res) => {
-  const ip = req.ip;
-  if (isLockedOut(ip)) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
-  const { username, password } = req.body || {};
-  if (typeof username !== 'string' || typeof password !== 'string' || !checkLogin(username, password)) {
-    recordFailure(ip);
-    return res.status(401).json({ error: 'Invalid username or password' });
-  }
-  clearFailures(ip);
-  req.session.regenerate(() => {
-    req.session.user = username;
-    res.json({ ok: true });
-  });
-});
-
-app.post('/api/logout', (req, res) => {
-  req.session.destroy(() => res.json({ ok: true }));
-});
+registerAccountRoutes(app, publicDir);
 
 // Send first-time visitors to setup before anything else.
 app.use((req, res, next) => {
@@ -105,32 +69,41 @@ app.use(requireAuth);
 
 app.use('/vendor/hls.js', express.static(path.join(ROOT, 'node_modules/hls.js/dist')));
 // Each fetch marks the stream as watched so idle HD streams can be stopped.
+// Stream folders are named <cameraId>_<variant>; only the camera's owner gets in.
 app.use('/streams', (req, res, next) => {
-  streams.touch(req.path.split('/')[1]);
+  const key = req.path.split('/')[1] || '';
+  if (!findCamera(key.replace(/_[a-z-]+$/, ''), req)) return res.status(404).end();
+  streams.touch(key);
   next();
 }, express.static(STREAM_DIR, {
   setHeaders: (res) => res.set('Cache-Control', 'no-store'),
 }));
 app.use(express.static(publicDir));
 
-app.get('/api/me', (req, res) => res.json({ user: req.session.user }));
+app.get('/api/me', (req, res) => res.json({ user: req.user.name, role: req.user.role }));
 
 function viewCamera(cam) {
   return publicCamera(cam, { status: streams.status(cam.id, 'grid') });
 }
 
-function findCamera(id) {
-  return getCameras().find((c) => c.id === id);
+// Every account only ever sees and changes its own cameras.
+function ownCameras(req) {
+  return getCameras().filter((c) => c.ownerId === req.user.id);
 }
 
-app.get('/api/cameras', (req, res) => res.json(getCameras().map(viewCamera)));
+function findCamera(id, req) {
+  return ownCameras(req).find((c) => c.id === id);
+}
+
+app.get('/api/cameras', (req, res) => res.json(ownCameras(req).map(viewCamera)));
 
 // Check a camera's settings before saving: connects and reports what it sends.
 app.post('/api/cameras/test', async (req, res) => {
   const body = req.body || {};
   let cam;
   try {
-    cam = validateCamera(body, body.id ? findCamera(body.id) : undefined);
+    cam = validateCamera(body, body.id ? findCamera(body.id, req) : undefined);
+    await assertCameraAllowed(cam, req.user, 0);
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -139,9 +112,10 @@ app.post('/api/cameras/test', async (req, res) => {
   res.json({ grid, hd });
 });
 
-app.post('/api/cameras', (req, res) => {
+app.post('/api/cameras', async (req, res) => {
   try {
-    const cam = { id: crypto.randomUUID(), ...validateCamera(req.body || {}) };
+    const cam = { id: crypto.randomUUID(), ownerId: req.user.id, ...validateCamera(req.body || {}) };
+    await assertCameraAllowed(cam, req.user, ownCameras(req).length + 1);
     const cameras = getCameras();
     cameras.push(cam);
     saveCameras(cameras);
@@ -152,12 +126,16 @@ app.post('/api/cameras', (req, res) => {
   }
 });
 
-app.put('/api/cameras/:id', (req, res) => {
-  const cameras = getCameras();
-  const idx = cameras.findIndex((c) => c.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Camera not found' });
+app.put('/api/cameras/:id', async (req, res) => {
+  if (!findCamera(req.params.id, req)) return res.status(404).json({ error: 'Camera not found' });
   try {
-    const cam = { id: cameras[idx].id, ...validateCamera(req.body || {}, cameras[idx]) };
+    const before = findCamera(req.params.id, req);
+    const cam = { id: before.id, ownerId: before.ownerId, ...validateCamera(req.body || {}, before) };
+    await assertCameraAllowed(cam, req.user, 0);
+    // Re-read after the await: another request may have saved in between.
+    const cameras = getCameras();
+    const idx = cameras.findIndex((c) => c.id === cam.id);
+    if (idx === -1) return res.status(404).json({ error: 'Camera not found' });
     cameras[idx] = cam;
     saveCameras(cameras);
     if (cam.enabled) streams.startCamera(cam); else streams.stopCamera(cam.id);
@@ -168,16 +146,15 @@ app.put('/api/cameras/:id', (req, res) => {
 });
 
 app.delete('/api/cameras/:id', (req, res) => {
-  const cameras = getCameras();
-  const next = cameras.filter((c) => c.id !== req.params.id);
-  if (next.length === cameras.length) return res.status(404).json({ error: 'Camera not found' });
+  if (!findCamera(req.params.id, req)) return res.status(404).json({ error: 'Camera not found' });
+  const next = getCameras().filter((c) => c.id !== req.params.id);
   streams.stopCamera(req.params.id);
   saveCameras(next);
   res.json({ ok: true });
 });
 
 app.post('/api/cameras/:id/restart', (req, res) => {
-  const cam = findCamera(req.params.id);
+  const cam = findCamera(req.params.id, req);
   if (!cam) return res.status(404).json({ error: 'Camera not found' });
   streams.startCamera(cam);
   res.json(viewCamera(cam));
@@ -185,7 +162,7 @@ app.post('/api/cameras/:id/restart', (req, res) => {
 
 // Start (or join) the full-quality stream for a viewer and wait until it's playable.
 app.post('/api/cameras/:id/hd', async (req, res) => {
-  const cam = findCamera(req.params.id);
+  const cam = findCamera(req.params.id, req);
   if (!cam) return res.status(404).json({ error: 'Camera not found' });
   if (!cam.enabled) return res.status(409).json({ error: 'Camera is disabled' });
   const variant = await streams.hdVariantFor(cam, Boolean(req.body?.hevc));
@@ -199,9 +176,10 @@ app.post('/api/cameras/:id/hd', async (req, res) => {
 });
 
 // ---------- detection / database ----------
-app.get('/api/detection/status', (req, res) => res.json(detection.status()));
+app.get('/api/detection/status', (req, res) => res.json(detection.status(req.user.id)));
 
-app.post('/api/detection/settings', (req, res) => {
+// Detection settings apply to the whole server, so only the admin changes them.
+app.post('/api/detection/settings', requireAdmin, (req, res) => {
   const body = req.body || {};
   if (typeof body.enabled === 'boolean') detection.enabled = body.enabled;
   if (body.intervalMs !== undefined) {
@@ -223,12 +201,18 @@ app.post('/api/detection/settings', (req, res) => {
     }
     setSetting(key, ms);
   }
-  res.json(detection.status());
+  res.json(detection.status(req.user.id));
 });
 
 app.get('/api/objects', (req, res) => {
   const kind = typeof req.query.kind === 'string' ? req.query.kind : null;
-  res.json(listObjects(kind, req.query.all === '1'));
+  res.json(listObjects(req.user.id, kind, req.query.all === '1'));
+});
+
+// Objects, sightings, alerts, snapshots and clips belong to one account.
+app.use('/api/objects/:id', (req, res, next) => {
+  if (!getObject(req.params.id, req.user.id)) return res.status(404).json({ error: 'Object not found' });
+  next();
 });
 
 app.patch('/api/objects/:id', (req, res) => {
@@ -257,12 +241,12 @@ app.delete('/api/objects/:id', (req, res) => {
 });
 
 app.get('/api/objects/:id/sightings', (req, res) => {
-  if (!getObject(req.params.id)) return res.status(404).json({ error: 'Object not found' });
-  res.json(listSightings({ objectId: req.params.id, limit: req.query.limit }));
+  res.json(listSightings({ ownerId: req.user.id, objectId: req.params.id, limit: req.query.limit }));
 });
 
 app.get('/api/sightings', (req, res) => {
   res.json(listSightings({
+    ownerId: req.user.id,
     objectId: typeof req.query.objectId === 'string' ? req.query.objectId : null,
     cameraId: typeof req.query.cameraId === 'string' ? req.query.cameraId : null,
     kind: typeof req.query.kind === 'string' ? req.query.kind : null,
@@ -271,17 +255,17 @@ app.get('/api/sightings', (req, res) => {
 });
 
 app.get('/api/alerts', (req, res) => {
-  res.json(listAlerts({ since: req.query.since, limit: req.query.limit }));
+  res.json(listAlerts({ ownerId: req.user.id, since: req.query.since, limit: req.query.limit }));
 });
 
 app.post('/api/alerts/ack', (req, res) => {
   const all = req.body?.all === true;
-  res.json({ changed: ackAlerts(req.body?.ids, all) });
+  res.json({ changed: ackAlerts(req.user.id, req.body?.ids, all) });
 });
 
 app.get('/api/alerts/:id/clip', (req, res) => {
   if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid alert' });
-  const alert = getAlert(req.params.id);
+  const alert = getAlert(req.params.id, req.user.id);
   if (!alert?.clip || !/^\d+(-\d+)?\.mp4$/i.test(alert.clip)) {
     return res.status(404).json({ error: 'Clip not available' });
   }
@@ -294,6 +278,7 @@ app.get('/api/alerts/:id/clip', (req, res) => {
 app.get('/api/snapshots/:file', (req, res) => {
   const name = req.params.file;
   if (!/^[\w-]+\.jpg$/i.test(name)) return res.status(400).json({ error: 'Invalid snapshot name' });
+  if (!ownsSnapshot(req.user.id, name)) return res.status(404).json({ error: 'Snapshot not found' });
   res.set('Cache-Control', 'no-store');
   res.sendFile(name, { root: SNAPSHOT_DIR }, (err) => {
     if (err && !res.headersSent) res.status(404).json({ error: 'Snapshot not found' });
@@ -317,6 +302,14 @@ if (snapshotCleanup.deduped || snapshotCleanup.orphans) {
 }
 cleanupAlerts();
 setInterval(cleanupAlerts, 60 * 60 * 1000).unref();
+// Cameras saved before accounts existed belong to the admin.
+{
+  const cameras = getCameras();
+  const admin = adminId();
+  if (admin !== null && cameras.some((c) => c.ownerId === undefined)) {
+    saveCameras(cameras.map((c) => (c.ownerId === undefined ? { ...c, ownerId: admin } : c)));
+  }
+}
 for (const cam of getCameras()) if (cam.enabled) streams.startCamera(cam);
 detection.start();
 
@@ -338,6 +331,7 @@ function shutdown() {
   streams.stopAll();
   server.close(() => {
     closeDatabase();
+    closeUsers();
     process.exit(0);
   });
 }

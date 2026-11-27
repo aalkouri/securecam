@@ -102,7 +102,7 @@ class DetectionLoop {
     return getSetting('detection.intervalMs', 4000);
   }
 
-  status() {
+  status(ownerId) {
     return {
       enabled: this.enabled,
       running: Boolean(this.timer),
@@ -116,7 +116,7 @@ class DetectionLoop {
       detections: this.detections,
       minSightings: MIN_SIGHTINGS,
       models: modelStatus(),
-      ...counts(),
+      ...counts(ownerId),
     };
   }
 
@@ -175,14 +175,17 @@ class DetectionLoop {
   }
 
   async save(camera, item, gap, cooldown, previouslyPresent, nowPresent) {
-    const match = findMatch(item.kind, item.embedding, item.fingerprint);
+    // Cameras from before accounts get an owner at boot (index.js); the
+    // fallback only covers a camera file edited by hand.
+    const owner = camera.ownerId ?? 1;
+    const match = findMatch(owner, item.kind, item.embedding, item.fingerprint);
     const seenAt = new Date().toISOString();
     // A weak face match to an already-named person becomes a fresh object so it
     // appears on the Detections page again instead of being silently absorbed.
-    const candidate = match ? null : findReviewCandidate(item.kind, item.embedding, item.fingerprint);
+    const candidate = match ? null : findReviewCandidate(owner, item.kind, item.embedding, item.fingerprint);
     const object = match
       ? match.object
-      : createObject(item.kind, item.embedding, item.fingerprint, candidate
+      : createObject(owner, item.kind, item.embedding, item.fingerprint, candidate
         ? { objectId: candidate.object.id, score: candidate.score }
         : null);
     if (match) updateObjectSignature(object.id, item.embedding, item.fingerprint, seenAt);

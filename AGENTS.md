@@ -20,14 +20,57 @@ h264 even when the stream is H.265). RTSP must be enabled in the Reolink app.
 | File | Role |
 | --- | --- |
 | `server/index.js` | Express app: security headers, sessions, routes, boot |
-| `server/auth.js` | Single admin account, scrypt hashes, login lockout |
+| `server/auth.js` | scrypt hashes, sign-in throttling, `requireAuth` (sets `req.user`), `requireAdmin` |
+| `server/users.js` | Accounts and one-time email links, in their own SQLite file `data/accounts.db` |
+| `server/accounts.js` | Signed-out routes: setup, sign-in, sign-up, email confirmation, password reset, Google |
+| `server/config.js` | Optional settings and secrets from env or `data/config.json` |
+| `server/mail.js` | Email through Resend's HTTP API |
+| `server/guard.js` | What an ordinary account may point a camera at (no private/local addresses) |
 | `server/store.js` | JSON-file persistence in `data/` (gitignored) |
 | `server/cameras.js` | Camera types (`reolink`, `generic`), validation, stream URLs, browser-safe view |
 | `server/streams.js` | ffprobe/ffmpeg process manager |
 | `server/database.js` | SQLite (`node:sqlite`) objects, sightings, alerts, detection settings |
 | `server/detector.js` | ONNX detection (YOLOv8n) + 512-d vehicle re-ID (YOLO26n-ReID) |
 | `server/detection.js` | Periodic frame capture, detection loop, alert creation |
-| `public/` | `index.html` + `app.js` (dashboard), `detections.html` + `detections.js`, `login.html`/`setup.html` + `login.js`, `style.css` |
+| `public/` | `index.html` + `app.js` (dashboard), `detections.html` + `detections.js`, `login.html`/`setup.html`/`signup.html`/`forgot.html`/`reset.html` + `login.js` + `auth.css`, `style.css` |
+
+## Accounts (multi-user)
+
+Anyone can create an account (the owner's decision), and **every account only
+sees what it owns**. This is the rule to keep in mind for every new route and
+query:
+
+- The first account is the **admin** (`role: 'admin'`). An install from before
+  accounts had one admin in `settings.json`; it is moved into `accounts.db` at
+  first boot and keeps its username sign-in. Cameras and objects from before
+  belong to it. Only the admin changes server-wide settings (`requireAdmin`).
+- `requireAuth` puts the account on `req.user` (`id`, `role`, `name`).
+- Cameras carry `ownerId`. In routes use `ownCameras(req)` / `findCamera(id, req)`,
+  never `getCameras()` directly. `/streams/<cameraId>_<variant>/` checks the
+  owner too.
+- `objects.owner_id` scopes detection data; sightings and alerts belong to
+  their object's owner. Every database read used by a route takes an owner id
+  (`listObjects`, `listSightings`, `listAlerts`, `getObject`, `getAlert`,
+  `ackAlerts`, `counts`, `ownsSnapshot`), and re-identification only matches
+  within one owner (`findMatch(ownerId, ...)`). **Any new table or query that a
+  route exposes must be scoped the same way**, or one user sees another's home.
+- Sign-up by email needs the address confirmed through a mailed link; Google
+  accounts are already confirmed. Without email configured (home install),
+  sign-up signs in directly and there is no password reset.
+- Sign-up, reset and duplicate-address replies never reveal whether an address
+  has an account. Only token hashes are stored; reset links carry the token
+  after `#`.
+- Google sign-in is the plain OAuth code flow in `accounts.js` (no library).
+  A Google address that matches an existing account links to it; if that
+  account was never confirmed, its password is dropped first.
+- The session cookie is `SameSite=Lax` (not Strict) so it survives the return
+  from Google and links opened from email.
+- Secrets (Google client secret, Resend key) live in `data/config.json` or env
+  vars. **Never in the repo: it is public.** See the comment in `config.js`
+  for the file's shape. `MAIL_LOG=1` prints emails to the log for testing.
+- On the droplet `restrictCameraHosts` is on: non-admin accounts cannot use
+  `clip://` or addresses on the server's own network (ffmpeg would fetch them
+  from inside), and `maxCamerasPerUser` caps how much one account can run.
 
 ## How streaming works
 
@@ -97,9 +140,9 @@ from the pinned Ultralytics release into `data/models/` and verified by SHA-256.
 - Redact credentials from any ffmpeg/ffprobe error before storing or returning
   it (`redact()` in streams.js).
 - `data/` holds secrets, snapshots, clips and models. Never commit it.
-- The admin password minimum is **7 characters** (the owner's decision). It's
-  enforced in `server/index.js` (`POST /api/setup`) and shown in
-  `public/setup.html`; keep the two in step.
+- The password minimum is **7 characters** (the owner's decision). It's
+  `MIN_PASSWORD` in `server/accounts.js` and is shown in the sign-up, reset and
+  setup pages; keep them in step.
 - Detection writes to SQLite with the built-in `node:sqlite`; don't add a native
   SQLite dependency. Spawn ffmpeg from detection with an argument array too.
 - Never expose object embeddings or raw camera URLs through the detection API.

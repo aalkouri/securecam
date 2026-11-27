@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SecureCam · New password</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/auth.css">
+</head>
+<body>
+  <div class="auth-wrap">
+    <form class="auth-card" id="auth-form" data-mode="reset">
+      <div class="brand"><span class="brand-dot"></span>SecureCam</div>
+      <h1>Choose a new password</h1>
+      <p>You will be signed in once it is saved.</p>
+      <label for="password">New password</label>
+      <input type="password" id="password" autocomplete="new-password" minlength="7" maxlength="200" required autofocus>
+      <label for="confirm">Confirm password</label>
+      <input type="password" id="confirm" autocomplete="new-password" minlength="7" maxlength="200" required>
+      <div class="hint">At least 7 characters.</div>
+      <button type="submit" class="primary">Save password</button>
+      <div class="error" id="error" role="alert"></div>
+      <div class="notice hidden" id="notice" role="status"></div>
+      <div class="auth-links"><a href="/forgot.html">Send me a new link</a></div>
+    </form>
+  </div>
+  <script src="/login.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+/* Sign-in pages only: Google button, links between the pages, notices. */
+.auth-card input[type=email] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.auth-card .google-btn {
+  display: block; margin-top: 20px; padding: 9px 14px; border-radius: 8px; text-align: center;
+  background: #fff; color: #1f1f1f; border: 1px solid #dadce0; text-decoration: none; font-weight: 500;
+}
+.auth-card .google-btn:hover { background: #f1f3f4; }
+.auth-divider {
+  display: flex; align-items: center; gap: 10px; margin-top: 16px; color: var(--muted); font-size: 12px;
+}
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.auth-links {
+  display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 16px; font-size: 13px;
+}
+.auth-links a { color: var(--accent); text-decoration: none; }
+.auth-links a:hover { text-decoration: underline; }
+.notice { margin-top: 12px; font-size: 14px; line-height: 1.4; }
