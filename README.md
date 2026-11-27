@@ -42,12 +42,14 @@ sees. The drop-down at the top of the page switches accounts at any time;
 choosing **Choose an account…** returns to the picker.
 
 The main page opens with an interactive floor plan. Use the **Building**
-drop-down to switch buildings, drag rooms to rearrange them, or drag the
-bottom-right corner of a room to resize it. Arrow keys also nudge a focused
-room or resize handle. Click the building or room title to rename it, use
+drop-down to switch buildings, drag rooms to rearrange them, or drag the corner
+icon to resize it. Arrow keys also nudge a focused room or resize handle. Click
+the building or room title (both use the same boxed label) to rename it, use
 **+ Room** to add another room, or use the **✕** on a room to delete it. A room
-with cameras cannot be deleted until those cameras are removed. Positions and
-sizes are saved per room in SQLite.
+with cameras cannot be deleted until those cameras are removed. Rooms cannot
+move into the space reserved for the building name and cannot shrink below the
+size needed for their **+ camera** button. Positions and sizes are saved per
+room in SQLite.
 
 ## Adding cameras
 
@@ -57,7 +59,14 @@ building; both are required. If you do not have one yet, select
 building and room are stored in SQLite, and the room belongs to its building.
 Each camera tile shows its building and room. You can also click **+ camera**
 inside a room on the floor plan; the form opens with that building and room
-already selected.
+already selected and a name like `Lobby - CAMERA`. If that name is taken, it
+suggests `Lobby - CAMERA 2`, then `CAMERA 3`, and so on. Camera names must be
+unique per account.
+
+Names, usernames and stream URLs reject special characters. Names allow only
+letters, numbers, spaces and hyphens; the IP address allows letters, numbers,
+dots and hyphens (or a `test://`, `clip://` or RTSP URL). Camera passwords are
+not restricted.
 
 - **Reolink:** choose *Reolink* and enter the camera's IP address, username
   (usually `admin`) and password. Turn on RTSP first in the Reolink app:

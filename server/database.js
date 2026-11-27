@@ -174,6 +174,11 @@ if (!db.prepare('PRAGMA table_info(buildings)').all().some((col) => col.name ===
 }
 db.exec('UPDATE alerts SET last_seen_at = created_at WHERE last_seen_at IS NULL');
 
+// Rooms stay below the building title and never get too small to hold their
+// controls. The browser enforces an even stricter minimum based on its own
+// font sizes; these are the database's hard limits.
+const ROOM_LIMITS = { minY: 10, minW: 14, minH: 18 };
+
 // Default floor-plan slots. Rooms are percentages of the building square, so
 // a plan looks the same on a laptop and a phone. A few rooms sit in a loose
 // grid; larger buildings get more columns and shorter rooms.
@@ -184,9 +189,9 @@ function roomLayouts(count) {
   const gap = 4;
   const w = (92 - (cols - 1) * gap) / cols;
   const rawH = (78 - (rows - 1) * gap) / rows;
-  const h = Math.min(30, rawH);
+  const h = Math.min(30, Math.max(ROOM_LIMITS.minH, rawH));
   const totalH = rows * h + (rows - 1) * gap;
-  const top = 12 + (78 - totalH) / 2;
+  const top = Math.max(ROOM_LIMITS.minY, 12 + (78 - totalH) / 2);
   const round = (n) => Number(n.toFixed(2));
   return Array.from({ length: count }, (_, i) => ({
     x: round(4 + (i % cols) * (w + gap)),
@@ -224,6 +229,32 @@ const clamp = (value, min, max, fallback) => {
   return Math.min(max, Math.max(min, n));
 };
 
+function normalizeRoomLayout(layout = {}) {
+  const x = clamp(layout.x, 0, 100 - ROOM_LIMITS.minW, Number(layout.x) || 6);
+  const y = clamp(layout.y, ROOM_LIMITS.minY, 100 - ROOM_LIMITS.minH, Number(layout.y) || 12);
+  const w = clamp(layout.w, ROOM_LIMITS.minW, 100 - x, Number(layout.w) || 28);
+  const h = clamp(layout.h, ROOM_LIMITS.minH, 100 - y, Number(layout.h) || 24);
+  return { x, y, w, h };
+}
+
+// Bring older layouts into the reserved-title and minimum-size rules too.
+db.exec('BEGIN IMMEDIATE');
+try {
+  const update = db.prepare('UPDATE rooms SET x = ?, y = ?, w = ?, h = ? WHERE id = ?');
+  const rows = db.prepare(`SELECT id, x, y, w, h FROM rooms
+    WHERE x IS NOT NULL AND y IS NOT NULL AND w IS NOT NULL AND h IS NOT NULL`).all();
+  for (const room of rows) {
+    const next = normalizeRoomLayout(room);
+    if (next.x !== room.x || next.y !== room.y || next.w !== room.w || next.h !== room.h) {
+      update.run(next.x, next.y, next.w, next.h, room.id);
+    }
+  }
+  db.exec('COMMIT');
+} catch (err) {
+  db.exec('ROLLBACK');
+  throw err;
+}
+
 const PREFIX = { car: 'CAR', truck: 'TRK', bus: 'BUS', person: 'PER', bicycle: 'BIK', motorcycle: 'MOT', cat: 'CAT', dog: 'DOG' };
 const LABEL = { car: 'Car', truck: 'Truck', bus: 'Bus', person: 'Person', bicycle: 'Bicycle', motorcycle: 'Motorcycle', cat: 'Cat', dog: 'Dog' };
 
@@ -252,6 +283,8 @@ export function setSetting(key, value) {
 
 // ----- building / room placement -----
 
+const SAFE_PLACEMENT_NAME = /^[a-zA-Z0-9][a-zA-Z0-9 -]*$/;
+
 function placementName(value, label, required = true) {
   const name = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
   if (!name) {
@@ -259,6 +292,9 @@ function placementName(value, label, required = true) {
     return '';
   }
   if (name.length > 100) throw new Error(`${label} name must be 100 characters or fewer`);
+  if (!SAFE_PLACEMENT_NAME.test(name)) {
+    throw new Error(`${label} name may only use letters, numbers, spaces and hyphens`);
+  }
   return name;
 }
 
@@ -313,10 +349,12 @@ export function updateRoomLayout(roomId, ownerId, layout = {}) {
   const current = db.prepare(`SELECT x, y, w, h FROM rooms WHERE id = ?
     AND building_id IN (SELECT id FROM buildings WHERE owner_id = ?)`).get(roomId, ownerId);
   if (!current) return null;
-  const x = clamp(layout.x ?? current.x, 0, 92, Number(current.x) || 6);
-  const y = clamp(layout.y ?? current.y, 0, 90, Number(current.y) || 12);
-  const w = clamp(layout.w ?? current.w, 8, 100 - x, Number(current.w) || 28);
-  const h = clamp(layout.h ?? current.h, 10, 100 - y, Number(current.h) || 24);
+  const { x, y, w, h } = normalizeRoomLayout({
+    x: layout.x ?? current.x,
+    y: layout.y ?? current.y,
+    w: layout.w ?? current.w,
+    h: layout.h ?? current.h,
+  });
   const result = db.prepare(`UPDATE rooms SET x = ?, y = ?, w = ?, h = ? WHERE id = ?`)
     .run(x, y, w, h, roomId);
   return result.changes ? { x, y, w, h } : null;

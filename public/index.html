@@ -59,8 +59,8 @@
       <div class="floorplan-head">
         <div>
           <h2 id="floorplan-title">Building layout</h2>
-          <p class="hint">Drag a room to move it, drag its bottom-right corner to resize, or click a title to rename.
-            Use <strong>+ camera</strong> to place a camera in that room.</p>
+          <p class="hint">Drag a room to move it, use the corner icon to resize it, or click a title to rename.
+            Rooms stay clear of the building name and large enough for <strong>+ camera</strong>.</p>
         </div>
         <div class="floorplan-controls">
           <label for="floorplan-building">Building</label>
@@ -155,14 +155,14 @@
       <div class="onboarding-body">
         <section id="onboarding-step-1">
           <label for="onboarding-building-name">Building name</label>
-          <input type="text" id="onboarding-building-name" placeholder="Home, Office Block, Warehouse…" maxlength="100">
+          <input type="text" id="onboarding-building-name" placeholder="Home, Office Block, Warehouse…" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only">
           <div class="tip"><span aria-hidden="true">💡</span><span>Think of the <strong>big picture</strong> first. You can add more buildings and rooms later.</span></div>
         </section>
 
         <section id="onboarding-step-2" class="hidden">
           <div class="onboarding-summary" id="onboarding-building-summary"></div>
           <label for="onboarding-room-name">Room name</label>
-          <input type="text" id="onboarding-room-name" placeholder="Front door, Driveway, Lobby…" maxlength="100">
+          <input type="text" id="onboarding-room-name" placeholder="Front door, Driveway, Lobby…" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only">
           <div class="tip"><span aria-hidden="true">💡</span><span>This room belongs to the building above. Every camera gets placed in a room so you always know where to look.</span></div>
         </section>
 
@@ -185,7 +185,7 @@
       <h2 id="dialog-title">Add camera</h2>
 
       <label for="cam-name">Name</label>
-      <input type="text" id="cam-name" placeholder="Front door" maxlength="64" required>
+      <input type="text" id="cam-name" placeholder="Lobby - CAMERA" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only" required>
 
       <div id="cam-placement-summary" class="onboarding-summary hidden"></div>
 
@@ -195,7 +195,7 @@
           <select id="cam-building" required>
             <option value="__new__">+ Create new building…</option>
           </select>
-          <input type="text" id="cam-new-building" class="hidden" placeholder="New building name" maxlength="100">
+          <input type="text" id="cam-new-building" class="hidden" placeholder="New building name" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only">
         </div>
         <div>
           <div id="room-select-field">
@@ -204,7 +204,7 @@
               <option value="">Choose a room…</option>
             </select>
           </div>
-          <input type="text" id="cam-new-room" class="hidden" placeholder="New room name" maxlength="100">
+          <input type="text" id="cam-new-room" class="hidden" placeholder="New room name" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only">
         </div>
       </div>
 
@@ -228,7 +228,7 @@
         <div class="row-2">
           <div>
             <label for="cam-username">Username</label>
-            <input type="text" id="cam-username" placeholder="admin" autocomplete="off">
+            <input type="text" id="cam-username" placeholder="admin" autocomplete="off" pattern="[A-Za-z0-9]*" title="Letters and numbers only">
           </div>
           <div>
             <label for="cam-password">Password</label>
@@ -252,7 +252,7 @@
           <option value="test://night-crossing" data-name="Night crossing">Night crossing</option>
         </select>
         <label for="cam-url">Stream URL</label>
-        <input type="text" id="cam-url" placeholder="rtsp://user:pass@192.168.1.50:554/stream1">
+        <input type="text" id="cam-url" placeholder="rtsp://user:pass@192.168.1.50:554/stream1" pattern="[A-Za-z0-9._~:/?#@&amp;=+$,%-]*" title="Use standard URL characters only">
         <div class="hint">The grid uses a lower-bandwidth view where available; the full view loads the original.
           The built-in feeds use <code>test://demo</code>, <code>test://reolink-sample</code>,
           <code>test://reolink-night-day</code>, <code>test://drive-thru</code>,
@@ -279,7 +279,7 @@
       <h2>Add a room</h2>
       <p class="hint" id="room-dialog-building"></p>
       <label for="room-name">Room name</label>
-      <input type="text" id="room-name" placeholder="Front door, Driveway, Lobby…" maxlength="100" required>
+      <input type="text" id="room-name" placeholder="Front door, Driveway, Lobby…" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only" required>
       <div class="error" id="room-error" role="alert"></div>
       <div class="row">
         <div class="right">
@@ -294,7 +294,7 @@
     <form method="dialog" id="rename-form">
       <h2 id="rename-title">Rename</h2>
       <label for="rename-input" id="rename-label">Name</label>
-      <input type="text" id="rename-input" maxlength="100" required>
+      <input type="text" id="rename-input" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only" required>
       <div class="error" id="rename-error" role="alert"></div>
       <div class="row">
         <div class="right">
@@ -320,7 +320,6 @@
       <div class="plan-room-head">
         <button type="button" class="plan-room-name" title="Rename room"></button>
         <span class="plan-room-tools">
-          <span class="plan-grip" aria-hidden="true">⠿</span>
           <button type="button" class="plan-room-close" title="Delete room" aria-label="Delete room">✕</button>
         </span>
       </div>

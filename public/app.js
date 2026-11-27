@@ -12,9 +12,49 @@ const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({
 })[c]);
 const when = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
 
+function validPlainName(value) {
+  return /^[A-Za-z0-9][A-Za-z0-9 -]*$/.test(String(value).trim());
+}
+
+function validateCameraInput(payload) {
+  if (!validPlainName(payload.name)) {
+    throw new Error('Camera name may only use letters, numbers, spaces and hyphens');
+  }
+  if (payload.newBuilding && !validPlainName(payload.newBuilding)) {
+    throw new Error('Building name may only use letters, numbers, spaces and hyphens');
+  }
+  if (payload.newRoom && !validPlainName(payload.newRoom)) {
+    throw new Error('Room name may only use letters, numbers, spaces and hyphens');
+  }
+  if (payload.type === 'reolink') {
+    if (!/^[A-Za-z0-9.-]+$/.test(payload.host.trim())) {
+      throw new Error('IP address may only use letters, numbers, dots and hyphens');
+    }
+    if (!/^[A-Za-z0-9]+$/.test(payload.username.trim())) {
+      throw new Error('Username may only use letters and numbers');
+    }
+  } else if (payload.url && !/^[A-Za-z0-9._~:/?#@&=+$,%-]+$/.test(payload.url.trim())) {
+    throw new Error('Stream URL contains unsupported characters');
+  }
+}
+
+function cameraNameExists(name, exceptId = null) {
+  const wanted = name.trim().toLowerCase();
+  return cameras.some((cam) => cam.id !== exceptId && cam.name.toLowerCase() === wanted);
+}
+
+function suggestedCameraName(roomName) {
+  const base = `${roomName} - CAMERA`;
+  if (!cameraNameExists(base)) return base;
+  let n = 2;
+  while (cameraNameExists(`${base} ${n}`)) n += 1;
+  return `${base} ${n}`;
+}
+
 const tiles = new Map(); // id -> { el, player, camera }
 let editingId = null;
 let buildings = [];
+let cameras = [];
 
 // Admin account switching.
 const accountSwitcher = document.getElementById('account-switcher');
@@ -176,7 +216,6 @@ function configKey(c) {
 }
 
 async function refresh() {
-  let cameras;
   try {
     cameras = await api('/api/cameras');
   } catch {
@@ -431,7 +470,7 @@ async function prepareCameraStep() {
 
   field('cam-building').value = onboardingState.building.id;
   setRoomOptions(onboardingState.building.id, onboardingState.room.id);
-  field('cam-name').value = '';
+  field('cam-name').value = suggestedCameraName(onboardingState.room.name);
   field('cam-type').value = 'reolink';
   field('cam-host').value = '';
   field('cam-port').value = '';
@@ -462,6 +501,7 @@ async function advanceOnboarding() {
     if (onboardingState.step === 1) {
       const name = field('onboarding-building-name').value.trim();
       if (!name) throw new Error('Enter a building name to continue.');
+      if (!validPlainName(name)) throw new Error('Use letters, numbers, spaces and hyphens only.');
       const building = await api('/api/buildings', { method: 'POST', body: JSON.stringify({ name }) });
       onboardingState.building = building;
       field('onboarding-building-summary').innerHTML = `<span>🏢 ${esc(building.name)}</span>`;
@@ -472,6 +512,7 @@ async function advanceOnboarding() {
     } else {
       const name = field('onboarding-room-name').value.trim();
       if (!name) throw new Error('Enter a room name to continue.');
+      if (!validPlainName(name)) throw new Error('Use letters, numbers, spaces and hyphens only.');
       const room = await api(`/api/buildings/${onboardingState.building.id}/rooms`, {
         method: 'POST', body: JSON.stringify({ name }),
       });
@@ -564,6 +605,10 @@ field('cam-building').addEventListener('change', () => {
 field('cam-room').addEventListener('change', updatePlacementFields);
 
 // ---------- interactive building floor plan ----------
+const PLAN_TITLE_CUSHION_PX = 16;
+let measuredMinRoomPixels = null;
+let planResizeTimer = null;
+
 const planPercent = (value, min, max) => {
   const n = Number(value);
   return Number(Math.min(max, Math.max(min, Number.isFinite(n) ? n : min)).toFixed(2));
@@ -573,14 +618,54 @@ function currentPlanBuilding() {
   return buildings.find((building) => building.id === planSelect.value) || null;
 }
 
-function normalizeLayout(layout = {}) {
-  const w = planPercent(layout.w, 8, 100);
-  const h = planPercent(layout.h, 10, 100);
-  return {
-    w, h,
-    x: planPercent(layout.x, 0, 100 - w),
-    y: planPercent(layout.y, 0, 100 - h),
+// Measure the smallest room that still keeps the + camera button inside it.
+function minRoomPixels() {
+  if (measuredMinRoomPixels) return measuredMinRoomPixels;
+  const sample = roomTpl.content.firstElementChild.cloneNode(true);
+  sample.style.cssText = 'position:absolute;left:-10000px;top:0;width:320px;height:auto;visibility:hidden;pointer-events:none;';
+  document.body.appendChild(sample);
+  const box = sample.getBoundingClientRect();
+  const add = sample.querySelector('.plan-add-cam').getBoundingClientRect();
+  const close = sample.querySelector('.plan-room-close').getBoundingClientRect();
+  measuredMinRoomPixels = {
+    w: Math.max(120, Math.ceil(Math.max(add.right, close.right) - box.left + 16)),
+    h: Math.max(88, Math.ceil(add.bottom - box.top + 16)),
   };
+  sample.remove();
+  return measuredMinRoomPixels;
+}
+
+// Rooms cannot enter the strip reserved for the building name, and cannot get
+// smaller than the measured contents. Everything is stored as percentages.
+function planLimits() {
+  const bounds = planRoomsEl.getBoundingClientRect();
+  const title = planOutlineName.getBoundingClientRect();
+  const width = bounds.width || 1000;
+  const height = bounds.height || 560;
+  const titleBottom = title.height ? title.bottom - bounds.top : 32;
+  const min = minRoomPixels();
+  const minW = planPercent((min.w / width) * 100, 14, 92);
+  const minH = planPercent((min.h / height) * 100, 18, 80);
+  const reservedY = Math.max(10, ((titleBottom + PLAN_TITLE_CUSHION_PX) / height) * 100);
+  return {
+    minY: planPercent(reservedY, 10, 100 - minH),
+    minW,
+    minH,
+  };
+}
+
+function constrainLayout(layout = {}, limits = planLimits()) {
+  const minW = Math.min(limits.minW, 92);
+  const minH = Math.min(limits.minH, 100 - limits.minY);
+  const x = planPercent(layout.x, 0, 100 - minW);
+  const w = planPercent(layout.w, minW, 100 - x);
+  const y = planPercent(layout.y, Math.min(limits.minY, 100 - minH), 100 - minH);
+  const h = planPercent(layout.h, minH, 100 - y);
+  return { x, y, w, h };
+}
+
+function normalizeLayout(layout = {}) {
+  return constrainLayout(layout);
 }
 
 function setRoomVars(el, layout) {
@@ -616,6 +701,15 @@ function updateFloorplanCounts() {
   }
 }
 
+// Re-clamp the layout when the board changes size; a room that was big enough
+// on a wide screen must not become too small on a narrow one.
+window.addEventListener('resize', () => {
+  clearTimeout(planResizeTimer);
+  planResizeTimer = setTimeout(() => {
+    if (!activeRoomDrag && !activeRoomResize) renderFloorplanRooms();
+  }, 120);
+});
+
 function renderFloorplanRooms() {
   planRoomsEl.innerHTML = '';
   const building = currentPlanBuilding();
@@ -624,7 +718,7 @@ function renderFloorplanRooms() {
   for (const room of rooms) {
     const el = roomTpl.content.firstElementChild.cloneNode(true);
     el.dataset.roomId = room.id;
-    el.setAttribute('aria-label', `${room.name} room. Drag to move, corner to resize.`);
+    el.setAttribute('aria-label', `${room.name} room. Drag to move, corner icon to resize.`);
     setRoomVars(el, room);
     const nameButton = el.querySelector('.plan-room-name');
     nameButton.textContent = room.name;
@@ -682,12 +776,10 @@ function startRoomDrag(e, room, el) {
   if (e.target.closest('button')) return;
   e.preventDefault();
   const bounds = planRoomsEl.getBoundingClientRect();
-  const layout = {
-    x: Number(room.x) || 6, y: Number(room.y) || 12,
-    w: Number(room.w) || 28, h: Number(room.h) || 24,
-  };
+  const limits = planLimits();
+  const layout = constrainLayout(room, limits);
   activeRoomDrag = {
-    id: e.pointerId, el, room, bounds,
+    id: e.pointerId, el, room, bounds, limits,
     startX: e.clientX, startY: e.clientY,
     origin: { ...layout }, layout, moved: false,
   };
@@ -700,7 +792,7 @@ function startRoomDrag(e, room, el) {
     const dx = (ev.clientX - drag.startX) / drag.bounds.width * 100;
     const dy = (ev.clientY - drag.startY) / drag.bounds.height * 100;
     drag.layout.x = planPercent(drag.origin.x + dx, 0, 100 - drag.layout.w);
-    drag.layout.y = planPercent(drag.origin.y + dy, 0, 100 - drag.layout.h);
+    drag.layout.y = planPercent(drag.origin.y + dy, drag.limits.minY, 100 - drag.layout.h);
     if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) drag.moved = true;
     setRoomVars(drag.el, drag.layout);
   };
@@ -726,9 +818,10 @@ function startRoomResize(e, room, el) {
   if (e.button !== 0 && e.pointerType === 'mouse') return;
   e.preventDefault();
   const bounds = planRoomsEl.getBoundingClientRect();
-  const layout = normalizeLayout(room);
+  const limits = planLimits();
+  const layout = constrainLayout(room, limits);
   activeRoomResize = {
-    id: e.pointerId, el, room, bounds,
+    id: e.pointerId, el, room, bounds, limits,
     startX: e.clientX, startY: e.clientY,
     origin: { ...layout }, layout, moved: false,
   };
@@ -740,8 +833,8 @@ function startRoomResize(e, room, el) {
     if (!resize || ev.pointerId !== resize.id) return;
     const dx = (ev.clientX - resize.startX) / resize.bounds.width * 100;
     const dy = (ev.clientY - resize.startY) / resize.bounds.height * 100;
-    resize.layout.w = planPercent(resize.origin.w + dx, 8, 100 - resize.origin.x);
-    resize.layout.h = planPercent(resize.origin.h + dy, 10, 100 - resize.origin.y);
+    resize.layout.w = planPercent(resize.origin.w + dx, resize.limits.minW, 100 - resize.origin.x);
+    resize.layout.h = planPercent(resize.origin.h + dy, resize.limits.minH, 100 - resize.origin.y);
     if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) resize.moved = true;
     setRoomVars(resize.el, resize.layout);
   };
@@ -773,9 +866,10 @@ function handleResizeKeys(e, room, el) {
   else if (e.key === 'ArrowDown') dy = step;
   else return;
   e.preventDefault();
-  const layout = normalizeLayout(room);
-  layout.w = planPercent(layout.w + dx, 8, 100 - layout.x);
-  layout.h = planPercent(layout.h + dy, 10, 100 - layout.y);
+  const limits = planLimits();
+  const layout = constrainLayout(room, limits);
+  layout.w = planPercent(layout.w + dx, limits.minW, 100 - layout.x);
+  layout.h = planPercent(layout.h + dy, limits.minH, 100 - layout.y);
   setRoomVars(el, layout);
   saveRoomLayout(room, layout);
 }
@@ -791,12 +885,10 @@ function handleRoomKeys(e, room, el) {
   else if (e.key === 'ArrowDown') dy = step;
   else return;
   e.preventDefault();
-  const layout = {
-    x: planPercent(Number(room.x) + dx, 0, 100 - Number(room.w || 28)),
-    y: planPercent(Number(room.y) + dy, 0, 100 - Number(room.h || 24)),
-    w: Number(room.w) || 28,
-    h: Number(room.h) || 24,
-  };
+  const limits = planLimits();
+  const layout = constrainLayout(room, limits);
+  layout.x = planPercent(layout.x + dx, 0, 100 - layout.w);
+  layout.y = planPercent(layout.y + dy, limits.minY, 100 - layout.h);
   setRoomVars(el, layout);
   saveRoomLayout(room, layout);
 }
@@ -991,7 +1083,8 @@ async function openDialog(camera, placement = {}) {
   } else {
     setRoomOptions(buildingId, preferredRoom || '');
   }
-  field('cam-name').value = camera?.name || '';
+  const room = buildings.find((b) => b.id === buildingId)?.rooms.find((r) => r.id === preferredRoom);
+  field('cam-name').value = camera?.name || (room ? suggestedCameraName(room.name) : '');
   field('cam-type').value = camera?.type || 'reolink';
   field('cam-host').value = camera?.host || '';
   field('cam-port').value = camera?.port || '';
@@ -1045,7 +1138,9 @@ field('cam-test').addEventListener('click', async () => {
   const btn = field('cam-test');
   btn.disabled = true;
   try {
-    const { grid: g, hd } = await api('/api/cameras/test', { method: 'POST', body: JSON.stringify(formPayload()) });
+    const payload = formPayload();
+    validateCameraInput(payload);
+    const { grid: g, hd } = await api('/api/cameras/test', { method: 'POST', body: JSON.stringify(payload) });
     const lines = [describeStream(hd ? 'Grid (low-res)' : 'Stream', g), describeStream('Full view (HD)', hd)].filter(Boolean);
     const ok = lines.every((l) => l.ok);
     if (ok && lines.some((l) => l.codec === 'hevc') && !PLAYS_HEVC) {
@@ -1065,12 +1160,17 @@ camForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   camError.textContent = '';
   try {
+    const payload = formPayload();
+    validateCameraInput(payload);
+    if (cameraNameExists(payload.name, editingId)) {
+      throw new Error('A camera with that name already exists');
+    }
     if (editingId) {
-      await api(`/api/cameras/${editingId}`, { method: 'PUT', body: JSON.stringify(formPayload()) });
+      await api(`/api/cameras/${editingId}`, { method: 'PUT', body: JSON.stringify(payload) });
       const tile = tiles.get(editingId);
       if (tile) tile.el.dataset.state = '';
     } else {
-      await api('/api/cameras', { method: 'POST', body: JSON.stringify(formPayload()) });
+      await api('/api/cameras', { method: 'POST', body: JSON.stringify(payload) });
     }
     try { await loadPlacements(); } catch { /* the next dialog will retry */ }
     if (onboardingState.active) finishOnboarding();

@@ -67,6 +67,20 @@ export function migrateTestCameraUrls(cameras) {
   return { cameras: next, changed };
 }
 const HOST_RE = /^[a-zA-Z0-9.-]{1,253}$/;
+// Names accept the characters people actually use for rooms and cameras.
+// Passwords are deliberately not filtered. URLs only accept standard URL
+// syntax, which still allows rtsp://, test:// and clip:// addresses.
+const SAFE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9 -]*$/;
+const SAFE_USERNAME_RE = /^[a-zA-Z0-9]{1,64}$/;
+const SAFE_URL_RE = /^[a-zA-Z0-9._~:/?#@&=+$,%-]+$/;
+
+function safeName(value, label, max) {
+  const name = str(value, max);
+  if (!SAFE_NAME_RE.test(name)) {
+    throw new Error(`${label} may only use letters, numbers, spaces and hyphens`);
+  }
+  return name;
+}
 
 // Main (full quality) and sub (low-res) stream URLs for a camera.
 // `sub` is null when the camera has only one stream.
@@ -126,7 +140,7 @@ function str(v, max = 512) {
 
 // Validate a create/update payload. `existing` is the stored camera on edit.
 export function validateCamera(body, existing) {
-  const name = str(body.name, 100);
+  const name = safeName(body.name, 'Name', 100);
   if (!name || name.length > 64) throw new Error('Name is required (max 64 characters)');
   const type = CAMERA_TYPES.includes(body.type) ? body.type : 'generic';
   const enabled = body.enabled !== false;
@@ -146,6 +160,7 @@ export function validateCamera(body, existing) {
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535');
     const username = str(body.username, 64);
     if (!username) throw new Error('Username is required (Reolink default is "admin")');
+    if (!SAFE_USERNAME_RE.test(username)) throw new Error('Username may only use letters and numbers');
     let password = typeof body.password === 'string' ? body.password : '';
     if (!password && existing?.type === 'reolink') password = existing.password;
     if (!password) throw new Error('Password is required');
@@ -153,6 +168,7 @@ export function validateCamera(body, existing) {
   }
 
   const url = unmask(str(body.url), existing?.url);
+  if (!SAFE_URL_RE.test(url)) throw new Error('Stream URL contains unsupported characters');
   if (!URL_SCHEMES.test(url)) throw new Error('Stream URL must start with rtsp://, rtsps://, http(s)://, clip:// or test://');
   if (isTest(url)) {
     const file = testClipPath(url);

@@ -195,6 +195,11 @@ function findCamera(id, req) {
   return ownCameras(req).find((c) => c.id === id);
 }
 
+function cameraNameTaken(name, req, exceptId = null) {
+  const wanted = name.trim().toLowerCase();
+  return ownCameras(req).some((cam) => cam.id !== exceptId && cam.name.toLowerCase() === wanted);
+}
+
 app.get('/api/cameras', (req, res) => {
   const placements = getCameraPlacements();
   res.json(ownCameras(req).map((cam) => viewCamera(cam, placements)));
@@ -218,6 +223,7 @@ app.post('/api/cameras/test', async (req, res) => {
 app.post('/api/cameras', async (req, res) => {
   try {
     const validated = validateCamera(req.body || {});
+    if (cameraNameTaken(validated.name, req)) throw new Error('A camera with that name already exists');
     await assertCameraAllowed({ ...validated }, req.user, ownCameras(req).length + 1);
     const placement = resolveCameraPlacement(req.body || {}, null, req.user.id);
     const cam = { id: crypto.randomUUID(), ownerId: req.user.id, ...validated, ...placement };
@@ -237,6 +243,7 @@ app.put('/api/cameras/:id', async (req, res) => {
   try {
     const before = findCamera(req.params.id, req);
     const validated = validateCamera(req.body || {}, before);
+    if (cameraNameTaken(validated.name, req, before.id)) throw new Error('A camera with that name already exists');
     await assertCameraAllowed({ ...validated }, req.user, 0);
     const placement = resolveCameraPlacement(req.body || {}, getCameraPlacements().get(before.id), req.user.id);
     const cam = { id: before.id, ownerId: before.ownerId, ...validated, ...placement };
