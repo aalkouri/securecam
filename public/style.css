@@ -265,3 +265,33 @@ body.no-scroll { overflow: hidden; }
 .clip-panel video, .clip-still { width: 100%; max-height: 68vh; display: block; background: #000; }
 .clip-still { height: auto; object-fit: contain; }
 .clip-panel .hint { padding: 8px 12px 14px; }
+
+/* ---- archived alert browser ---- */
+.archive-panel {
+  width: min(900px, 100%); overflow: hidden;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 20px 60px rgba(0,0,0,.6);
+}
+.archive-body {
+  display: grid; grid-template-columns: 200px 1fr;
+  min-height: 320px; max-height: 70vh;
+}
+.archive-days {
+  display: grid; gap: 6px; align-content: start; overflow-y: auto;
+  padding: 8px; border-right: 1px solid var(--border);
+}
+.archive-day {
+  width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 8px 10px; text-align: left; color: inherit;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+}
+.archive-day:hover { border-color: var(--accent); }
+.archive-day.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.archive-day.active .hint { color: rgba(255,255,255,.8); }
+.archive-clips {
+  display: grid; gap: 8px; align-content: start; overflow-y: auto; padding: 10px;
+}
+@media (max-width: 640px) {
+  .archive-body { grid-template-columns: 1fr; }
+  .archive-days { border-right: 0; border-bottom: 1px solid var(--border); max-height: 150px; }
+}

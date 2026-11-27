@@ -65,10 +65,36 @@ db.exec(`
     value TEXT NOT NULL
   );
 
+  -- One ZIP per local day. Clip metadata is copied here so an archive remains
+  -- browsable after its alert row has passed the seven-day retention window.
+  CREATE TABLE IF NOT EXISTS alert_archives (
+    date       TEXT PRIMARY KEY,
+    zip_name   TEXT NOT NULL,
+    clip_count INTEGER NOT NULL DEFAULT 0,
+    byte_size  INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS alert_archive_clips (
+    archive_date TEXT NOT NULL REFERENCES alert_archives(date) ON DELETE CASCADE,
+    alert_id     INTEGER NOT NULL,
+    clip_name    TEXT NOT NULL,
+    object_name  TEXT,
+    identifier   TEXT,
+    kind         TEXT,
+    camera_name  TEXT,
+    message      TEXT,
+    seen_at      TEXT,
+    snapshot     TEXT,
+    PRIMARY KEY (archive_date, clip_name)
+  );
+
   CREATE INDEX IF NOT EXISTS sightings_seen_at ON sightings(seen_at DESC);
   CREATE INDEX IF NOT EXISTS sightings_object ON sightings(object_id, seen_at DESC);
   CREATE INDEX IF NOT EXISTS alerts_created_at ON alerts(created_at DESC);
   CREATE INDEX IF NOT EXISTS objects_kind ON objects(kind);
+  CREATE INDEX IF NOT EXISTS archive_clips_name ON alert_archive_clips(clip_name);
+  CREATE INDEX IF NOT EXISTS archive_clips_alert ON alert_archive_clips(alert_id);
 `);
 
 // Older databases predate these columns. Add them in place so existing IDs,
@@ -454,6 +480,8 @@ export function recordSighting({ object, camera, confidence, bbox, snapshot, see
 
 const ALERT_SELECT = `SELECT a.id, a.object_id, a.sighting_id, a.camera_id, a.camera_name,
   a.message, a.created_at, a.last_seen_at, a.repeats, a.ack, a.clip,
+  (SELECT ac.archive_date FROM alert_archive_clips ac WHERE ac.alert_id = a.id
+   ORDER BY ac.archive_date DESC LIMIT 1) AS archive_date,
   o.name, o.identifier, o.kind, o.owner_id, s.snapshot
   FROM alerts a JOIN objects o ON o.id = a.object_id
   LEFT JOIN sightings s ON s.id = a.sighting_id`;
@@ -472,6 +500,7 @@ function alertRow(row) {
     createdAt: row.created_at,
     lastSeen: row.last_seen_at || row.created_at,
     repeats: row.repeats || 1,
+    archiveDate: row.archive_date || null,
     ack: Boolean(row.ack),
     hasClip: Boolean(row.clip),
     clip: row.clip || null,
@@ -507,6 +536,10 @@ export function setAlertClip(id, clip) {
 export function consolidateAlerts() {
   const groups = db.prepare(`SELECT object_id, camera_id FROM alerts
     GROUP BY object_id, camera_id HAVING COUNT(*) > 1`).all();
+  // Archived clips no longer have a loose file, so never make a live alert
+  // point back at one while folding older rows together.
+  const archived = new Set(db.prepare('SELECT clip_name FROM alert_archive_clips').all()
+    .map((row) => row.clip_name));
   const fold = db.prepare(`UPDATE alerts SET created_at = ?, last_seen_at = ?, repeats = ?,
     sighting_id = ?, clip = COALESCE(clip, ?) WHERE id = ?`);
   const remove = db.prepare('DELETE FROM alerts WHERE id = ?');
@@ -519,9 +552,9 @@ export function consolidateAlerts() {
       .all(group.object_id, group.camera_id);
     if (rows.length < 2) continue;
     const keep = rows[rows.length - 1];
-    // Prefer the newest clip; an older one is only used if the newest alert
-    // never recorded video.
-    const chosenClip = rows.reduce((found, row) => row.clip || found, null);
+    // Prefer the newest live clip; an older one is only used if the newest
+    // alert never recorded video.
+    const chosenClip = rows.reduce((found, row) => (!archived.has(row.clip) && row.clip ? row.clip : found), null);
     const repeats = rows.reduce((sum, row) => sum + row.repeats, 0);
     const lastSeen = rows.reduce((latest, row) => (row.last_at > latest ? row.last_at : latest), rows[0].last_at);
     fold.run(rows[0].created_at, lastSeen, repeats, keep.sighting_id, chosenClip, keep.id);
@@ -529,7 +562,7 @@ export function consolidateAlerts() {
       if (row.id === keep.id) continue;
       remove.run(row.id);
       alerts += 1;
-      if (row.clip && row.clip !== chosenClip) clips.add(row.clip);
+      if (row.clip && row.clip !== chosenClip && !archived.has(row.clip)) clips.add(row.clip);
     }
   }
   return { alerts, clips: [...clips] };
@@ -545,6 +578,115 @@ export function pruneOldAlerts(maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
   const alerts = db.prepare(`DELETE FROM alerts WHERE COALESCE(last_seen_at, created_at) < ?`)
     .run(cutoff).changes;
   return { alerts, clips };
+}
+
+// ----- daily alert-clip archives -----
+
+// Clips are archived by the local date of the clip filename, not by when the
+// archive job happens to run. This makes catch-up after a downtime exact.
+export function getUnarchivedClips() {
+  return db.prepare(`SELECT a.id AS alert_id, a.clip, a.created_at, a.last_seen_at,
+      a.message, a.camera_name, o.name AS object_name, o.identifier, o.kind, s.snapshot
+    FROM alerts a
+    JOIN objects o ON o.id = a.object_id
+    LEFT JOIN sightings s ON s.id = a.sighting_id
+    WHERE a.clip IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM alert_archive_clips ac WHERE ac.clip_name = a.clip)
+    ORDER BY a.clip`)
+    .all()
+    .map((row) => ({
+      alertId: row.alert_id,
+      clip: row.clip,
+      createdAt: row.created_at,
+      lastSeen: row.last_seen_at || row.created_at,
+      objectName: row.object_name,
+      identifier: row.identifier,
+      kind: row.kind,
+      cameraName: row.camera_name,
+      message: row.message,
+      snapshot: row.snapshot || null,
+    }));
+}
+
+export function listArchives() {
+  return db.prepare(`SELECT date, zip_name AS zipName, clip_count AS clipCount,
+      byte_size AS byteSize, created_at AS createdAt
+    FROM alert_archives ORDER BY date DESC`)
+    .all()
+    .map((row) => ({
+      date: row.date,
+      zipName: row.zipName,
+      clipCount: row.clipCount,
+      byteSize: row.byteSize,
+      createdAt: row.createdAt,
+    }));
+}
+
+export function getArchive(date) {
+  const row = db.prepare(`SELECT date, zip_name AS zipName, clip_count AS clipCount,
+      byte_size AS byteSize, created_at AS createdAt
+    FROM alert_archives WHERE date = ?`).get(date);
+  if (!row) return null;
+  return {
+    date: row.date, zipName: row.zipName, clipCount: row.clipCount,
+    byteSize: row.byteSize, createdAt: row.createdAt,
+  };
+}
+
+export function getArchiveClips(date) {
+  return db.prepare(`SELECT alert_id AS alertId, clip_name AS clipName,
+      object_name AS objectName, identifier, kind, camera_name AS cameraName,
+      message, seen_at AS seenAt, snapshot
+    FROM alert_archive_clips WHERE archive_date = ?
+    ORDER BY seen_at DESC, alert_id DESC`)
+    .all(date)
+    .map((row) => ({
+      alertId: row.alertId,
+      clipName: row.clipName,
+      objectName: row.objectName,
+      identifier: row.identifier,
+      kind: row.kind,
+      cameraName: row.cameraName,
+      message: row.message,
+      seenAt: row.seenAt,
+      snapshot: row.snapshot || null,
+    }));
+}
+
+// Store the archive and its clip metadata in one transaction. Only after this
+// succeeds does the caller delete the loose MP4 files.
+export function saveArchive(date, zipName, byteSize, clips) {
+  const insertArchive = db.prepare(`INSERT OR IGNORE INTO alert_archives
+    (date, zip_name, clip_count, byte_size, created_at) VALUES (?, ?, 0, ?, ?)`);
+  const updateArchive = db.prepare('UPDATE alert_archives SET zip_name = ?, byte_size = ?, clip_count = ? WHERE date = ?');
+  const insertClip = db.prepare(`INSERT OR IGNORE INTO alert_archive_clips
+    (archive_date, alert_id, clip_name, object_name, identifier, kind, camera_name, message, seen_at, snapshot)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const clearClip = db.prepare('UPDATE alerts SET clip = NULL WHERE id = ? AND clip = ?');
+
+  db.exec('BEGIN');
+  try {
+    insertArchive.run(date, zipName, byteSize, new Date().toISOString());
+    for (const clip of clips) {
+      insertClip.run(date, clip.alertId, clip.clip, clip.objectName, clip.identifier,
+        clip.kind, clip.cameraName, clip.message, clip.seenAt, clip.snapshot);
+      clearClip.run(clip.alertId, clip.clip);
+    }
+    const count = db.prepare('SELECT COUNT(*) AS n FROM alert_archive_clips WHERE archive_date = ?').get(date).n;
+    updateArchive.run(zipName, byteSize, count, date);
+    db.exec('COMMIT');
+    return count;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+export function pruneOldArchives(cutoffDate) {
+  const zips = db.prepare('SELECT zip_name AS zipName FROM alert_archives WHERE date < ?')
+    .all(cutoffDate).map((row) => row.zipName);
+  const archives = db.prepare('DELETE FROM alert_archives WHERE date < ?').run(cutoffDate).changes;
+  return { archives, zips };
 }
 
 const OWNED = 'object_id IN (SELECT id FROM objects WHERE owner_id = ?)';

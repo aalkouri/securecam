@@ -10,6 +10,7 @@
   <header>
     <div class="brand"><span class="brand-dot"></span>SecureCam</div>
     <div class="actions">
+      <button id="archive-btn" title="Browse archived alert clips">Archives</button>
       <div class="alerts-wrap" id="alerts-wrap">
         <button id="alerts-btn" aria-expanded="false" aria-controls="alerts-dropdown">
           Alerts <span class="alert-count hidden" id="alert-count">0</span>
@@ -46,6 +47,20 @@
   </main>
 
   <div id="alerts" class="toasts" aria-live="polite"></div>
+
+  <!-- Browse archived alert days; the ZIP is unpacked on demand -->
+  <div id="archive-modal" class="clip-modal hidden" role="dialog" aria-modal="true" aria-labelledby="archive-title">
+    <div class="archive-panel">
+      <div class="clip-bar">
+        <span id="archive-title">Archived alert clips</span>
+        <button class="icon" id="archive-close" title="Close (Esc)">✕</button>
+      </div>
+      <div class="archive-body">
+        <div id="archive-days" class="archive-days"></div>
+        <div id="archive-clips" class="archive-clips"><p class="hint">Choose a day to browse its alert clips.</p></div>
+      </div>
+    </div>
+  </div>
 
   <!-- Five-second clip from an alert -->
   <div id="clip-modal" class="clip-modal hidden" role="dialog" aria-modal="true" aria-labelledby="clip-title">

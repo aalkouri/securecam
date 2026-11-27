@@ -13,6 +13,7 @@ import { streams, STREAM_DIR, probe } from './streams.js';
 import { validateCamera, publicCamera, gridUrl, hdUrl } from './cameras.js';
 import { detection } from './detection.js';
 import { ALERT_CLIP_DIR, removeAlertClip } from './clips.js';
+import { startArchiveJob, listArchives, extractArchive, archiveClipPath } from './archives.js';
 import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
   listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots,
@@ -275,6 +276,35 @@ app.get('/api/alerts/:id/clip', (req, res) => {
   });
 });
 
+// Archives bundle every account's alert clips into one file per day, so until
+// they are split per account only the admin can browse them. Other accounts
+// simply have none.
+app.get('/api/alert-archives', (req, res) => {
+  res.json(req.user.role === 'admin' ? listArchives() : []);
+});
+
+app.post('/api/alert-archives/:date/extract', requireAdmin, (req, res) => {
+  try {
+    res.json(extractArchive(req.params.date));
+  } catch (err) {
+    res.status(err.message === 'Archive not found' ? 404 : 400).json({ error: err.message });
+  }
+});
+
+app.get('/api/alert-archives/:date/clip/:name', requireAdmin, (req, res) => {
+  let file;
+  try {
+    file = archiveClipPath(req.params.date, req.params.name);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (!file) return res.status(404).json({ error: 'Archived clip not found' });
+  res.set('Cache-Control', 'no-store');
+  res.sendFile(path.basename(file), { root: path.dirname(file) }, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'Archived clip not found' });
+  });
+});
+
 app.get('/api/snapshots/:file', (req, res) => {
   const name = req.params.file;
   if (!/^[\w-]+\.jpg$/i.test(name)) return res.status(400).json({ error: 'Invalid snapshot name' });
@@ -302,6 +332,7 @@ if (snapshotCleanup.deduped || snapshotCleanup.orphans) {
 }
 cleanupAlerts();
 setInterval(cleanupAlerts, 60 * 60 * 1000).unref();
+startArchiveJob();
 // Cameras saved before accounts existed belong to the admin.
 {
   const cameras = getCameras();

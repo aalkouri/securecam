@@ -274,6 +274,7 @@ document.getElementById('focus-fullscreen').addEventListener('click', () => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!clipModal.classList.contains('hidden')) return closeClip();
+  if (!archiveModal.classList.contains('hidden')) return closeArchives();
   if (focus.camera && !document.fullscreenElement && !dialog.open) closeFocus();
 });
 
@@ -456,15 +457,16 @@ function openClip(alert) {
   activeClipAlert = alert;
   clipTitle.textContent = alert.message;
   const hasStill = Boolean(alert.snapshot);
-  clipVideo.classList.toggle('hidden', !alert.hasClip);
-  clipStill.classList.toggle('hidden', alert.hasClip || !hasStill);
+  const playable = Boolean(alert.clipUrl || alert.hasClip);
+  clipVideo.classList.toggle('hidden', !playable);
+  clipStill.classList.toggle('hidden', playable || !hasStill);
   clipStill.src = hasStill ? snapshotUrl(alert.snapshot) : '';
-  clipNote.textContent = alert.hasClip
-    ? 'Latest 5-second 1080p clip from this alert.'
-    : hasStill ? 'No clip was saved for this alert.' : 'No media was saved for this alert.';
+  clipNote.textContent = alert.note
+    || (playable ? 'Latest 5-second 1080p clip from this alert.'
+      : hasStill ? 'No clip was saved for this alert.' : 'No media was saved for this alert.');
   clipModal.classList.remove('hidden');
-  if (alert.hasClip) {
-    clipVideo.src = `/api/alerts/${alert.id}/clip`;
+  if (playable) {
+    clipVideo.src = alert.clipUrl || `/api/alerts/${alert.id}/clip`;
     clipVideo.play()?.catch(() => {});
   }
 }
@@ -511,6 +513,86 @@ clipVideo.addEventListener('error', () => {
   clipStill.classList.toggle('hidden', !hasStill);
   if (hasStill) clipStill.src = snapshotUrl(activeClipAlert.snapshot);
   clipNote.textContent = 'This clip is not available. The alert snapshot is shown instead.';
+});
+
+// ---------- archived alert clips ----------
+const archiveBtn = document.getElementById('archive-btn');
+const archiveModal = document.getElementById('archive-modal');
+const archiveDays = document.getElementById('archive-days');
+const archiveClips = document.getElementById('archive-clips');
+const archiveClose = document.getElementById('archive-close');
+let activeArchiveDate = null;
+let activeArchiveClips = [];
+
+function closeArchives() {
+  archiveModal.classList.add('hidden');
+}
+
+async function openArchives() {
+  archiveModal.classList.remove('hidden');
+  activeArchiveDate = null;
+  activeArchiveClips = [];
+  archiveDays.innerHTML = '<p class="hint">Loading…</p>';
+  archiveClips.innerHTML = '<p class="hint">Choose a day to browse its alert clips.</p>';
+  try {
+    const archives = await api('/api/alert-archives');
+    archiveDays.innerHTML = archives.length
+      ? archives.map((a) => `
+          <button type="button" class="archive-day" data-date="${esc(a.date)}">
+            <strong>${esc(a.date)}</strong>
+            <span class="hint">${a.clipCount} clip${a.clipCount === 1 ? '' : 's'} · ${(a.byteSize / 1048576).toFixed(1)} MB</span>
+          </button>`).join('')
+      : '<p class="hint">No archived days yet.</p>';
+  } catch (err) {
+    archiveDays.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
+  }
+}
+
+async function selectArchiveDay(date) {
+  activeArchiveDate = date;
+  for (const button of archiveDays.querySelectorAll('[data-date]')) {
+    button.classList.toggle('active', button.dataset.date === date);
+  }
+  archiveClips.innerHTML = '<p class="hint">Unpacking this day…</p>';
+  try {
+    const data = await api(`/api/alert-archives/${encodeURIComponent(date)}/extract`, { method: 'POST' });
+    activeArchiveClips = data.clips;
+    archiveClips.innerHTML = data.clips.length
+      ? data.clips.map((clip, index) => `
+          <button type="button" class="alert-item" data-clip="${index}">
+            ${clip.snapshot ? `<img src="${snapshotUrl(clip.snapshot)}" alt="" class="alert-thumb">` : ''}
+            <span class="alert-text">
+              <strong>${esc(clip.message || `${clip.objectName || 'Alert'} showed up`)}</strong>
+              <span class="hint">${esc(clip.cameraName || 'Camera')} · ${esc(when(clip.seenAt))}</span>
+            </span>
+            <span class="alert-play">▶ clip</span>
+          </button>`).join('')
+      : '<p class="hint">No alert clips were archived for this day.</p>';
+  } catch (err) {
+    activeArchiveClips = [];
+    archiveClips.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
+  }
+}
+
+archiveBtn.addEventListener('click', openArchives);
+archiveClose.addEventListener('click', closeArchives);
+archiveModal.addEventListener('click', (e) => { if (e.target === archiveModal) closeArchives(); });
+archiveDays.addEventListener('click', (e) => {
+  const button = e.target.closest('[data-date]');
+  if (button) selectArchiveDay(button.dataset.date);
+});
+archiveClips.addEventListener('click', (e) => {
+  const button = e.target.closest('[data-clip]');
+  if (!button) return;
+  const clip = activeArchiveClips[Number(button.dataset.clip)];
+  if (!clip) return;
+  openClip({
+    message: clip.message || `${clip.objectName || 'Alert'} showed up in camera ${clip.cameraName || 'camera'}`,
+    snapshot: clip.snapshot,
+    hasClip: true,
+    clipUrl: clip.clipUrl,
+    note: `Archived alert clip from ${activeArchiveDate}.`,
+  });
 });
 
 async function pollAlerts() {
