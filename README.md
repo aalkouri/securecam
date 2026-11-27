@@ -96,6 +96,13 @@ duplicate alerts are folded together on startup, and alerts and clips older
 than **7 days** are removed hourly. The Alerts dropdown shows when an object was
 last seen and how many sightings the group contains.
 
+Shortly after local midnight, the previous day's alert clips are zipped into
+`data/alert-archives/YYYY-MM-DD.zip` and indexed in SQLite. The loose MP4 files
+are deleted once the archive is safely written. Click **Archives** in the header
+to browse a previous day — SecureCam unpacks that ZIP on demand and plays the
+clips without exposing a download. Archive days older than **30 days** are
+removed automatically.
+
 Each enabled camera is always recording a rolling **10-minute low-res buffer**.
 When an alert happens, SecureCam saves a **five-second 1080p clip from that
 camera's full-quality stream** and links it to the alert. The buffer uses
