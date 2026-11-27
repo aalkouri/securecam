@@ -23,8 +23,14 @@ const PORT = Number(process.env.PORT || 8080);
 // Localhost only by default. Set HOST=0.0.0.0 to view from other devices on your LAN.
 const HOST = process.env.HOST || '127.0.0.1';
 
+// Set TRUST_PROXY=1 when an HTTPS reverse proxy on this machine (e.g. Caddy)
+// sits in front. The login lockout then sees each visitor's real address
+// instead of the proxy's, and the session cookie is marked Secure.
+const BEHIND_PROXY = process.env.TRUST_PROXY === '1';
+
 const app = express();
 app.disable('x-powered-by');
+if (BEHIND_PROXY) app.set('trust proxy', 'loopback');
 app.use(express.json({ limit: '32kb' }));
 
 app.use((req, res, next) => {
@@ -42,7 +48,7 @@ app.use(session({
   secret: getSettings().sessionSecret,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'strict', maxAge: 12 * 60 * 60 * 1000 },
+  cookie: { httpOnly: true, sameSite: 'strict', secure: BEHIND_PROXY, maxAge: 12 * 60 * 60 * 1000 },
 }));
 
 // ---------- public routes ----------
