@@ -323,6 +323,7 @@ function updatePlacementFields() {
   const creatingRoom = creatingBuilding || field('cam-room').value === '__new__';
   field('cam-new-building').classList.toggle('hidden', !creatingBuilding);
   field('cam-new-building').required = creatingBuilding;
+  field('room-select-field').classList.toggle('hidden', creatingBuilding);
   field('cam-room').disabled = creatingBuilding;
   field('cam-room').required = !creatingBuilding;
   field('cam-new-room').classList.toggle('hidden', !creatingRoom);
