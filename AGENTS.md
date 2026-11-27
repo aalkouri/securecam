@@ -159,9 +159,16 @@ database) and `node/` (Node 24; the system Node 18 belongs to the games and is
 too old for `node:sqlite`). Caddy terminates HTTPS and proxies to
 `127.0.0.1:8082`; the systemd unit `securecam` sets `TRUST_PROXY=1`.
 
-- **Deploy with `npm run deploy`** (scripts/deploy.ps1): uploads committed
-  `HEAD`, runs `npm ci`, restarts the service. This repo has no GitHub remote,
-  so unlike the games there is no pull-on-push; nothing deploys by itself.
+- **Pushing to `main` deploys to production.** The repo is public at
+  github.com/aalkouri/securecam (the owner's choice). A cron job on the droplet
+  runs `~/securecam-pull.sh --cron` every minute (copy of record:
+  `scripts/droplet-pull.sh`): it downloads the new commit, syntax-checks it,
+  runs `npm ci` in a fresh folder, swaps it in, restarts the service and rolls
+  back if the login page doesn't answer. Log: `~/securecam-deploy/deploy.log`.
+  So: commit locally as often as you like, but only push what should go live,
+  and never commit anything private — the repo is public.
+- Changing `scripts/droplet-pull.sh` does not update the droplet's copy; copy
+  it to `~/securecam-pull.sh` by hand.
 - `scripts/droplet-setup.sh` is the one-time root part (ffmpeg, service,
   sudoers entry, Caddy site). `deploy` can only `systemctl restart securecam`.
 - The droplet cannot reach cameras on the owner's home network. Until a link

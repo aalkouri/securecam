@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time root setup for SecureCam on the games-server droplet.
 # The app itself lives in /home/deploy/securecam (app, data, its own Node) and
-# is put there by scripts/deploy.ps1. This script adds the parts only root can:
+# is put there by scripts/droplet-pull.sh. This script adds the parts only root can:
 # ffmpeg, the systemd service, permission for `deploy` to restart it, and the
 # Caddy site. Safe to run again.
 #   sudo bash /home/deploy/securecam/app/scripts/droplet-setup.sh
@@ -10,7 +10,7 @@ set -euo pipefail
 DOMAIN=securecam.alkouri.com
 PORT=8082
 HOME_DIR=/home/deploy/securecam
-[ -x "$HOME_DIR/node/bin/node" ] && [ -f "$HOME_DIR/app/server/index.js" ] || { echo "Deploy the app first (npm run deploy)."; exit 1; }
+[ -x "$HOME_DIR/node/bin/node" ] && [ -f "$HOME_DIR/app/server/index.js" ] || { echo "Deploy the app first (bash ~/securecam-pull.sh --force)."; exit 1; }
 
 echo "== ffmpeg"
 export DEBIAN_FRONTEND=noninteractive
