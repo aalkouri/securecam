@@ -197,8 +197,10 @@ export function cleanupSnapshots() {
       } catch { continue; }
     }
     for (const name of names) {
-      if (name === keep) continue;
+      // Repoint every alias, including the file just renamed to `canonical`:
+      // sightings still reference its old UUID name.
       repoint.run(canonical, name);
+      if (name === keep) continue;
       fs.rmSync(path.join(SNAPSHOT_DIR, name), { force: true });
       deduped += 1;
     }
