@@ -25,6 +25,11 @@
             <button class="icon" id="ack-all-alerts">Acknowledge all</button>
           </div>
           <div id="alerts-list" class="alert-list"></div>
+          <div class="dropdown-section">
+            <strong>Recent sightings</strong>
+            <div id="recent-sightings" class="alert-list"></div>
+          </div>
+          <button type="button" class="dropdown-footer" id="archived-objects-btn">Archived objects</button>
         </div>
       </div>
       <a class="detection-button" href="/detections.html" title="Name and review detected objects">
@@ -360,6 +365,7 @@
   </template>
 
   <script src="/vendor/hls.js/hls.min.js"></script>
+  <script src="/object-details.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

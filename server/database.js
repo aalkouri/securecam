@@ -60,6 +60,19 @@ db.exec(`
     ack          INTEGER NOT NULL DEFAULT 0
   );
 
+  -- Every edit to an object's tracked details is kept here so color, make,
+  -- model, plate, action and archive state have a history, not just a current
+  -- value. Sightings stay in their own table with confidence and location.
+  CREATE TABLE IF NOT EXISTS object_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    object_id    TEXT NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL,
+    value        TEXT,
+    seen_at      TEXT NOT NULL,
+    camera_id    TEXT,
+    camera_name  TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -124,6 +137,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS sightings_seen_at ON sightings(seen_at DESC);
   CREATE INDEX IF NOT EXISTS sightings_object ON sightings(object_id, seen_at DESC);
   CREATE INDEX IF NOT EXISTS alerts_created_at ON alerts(created_at DESC);
+  CREATE INDEX IF NOT EXISTS object_events_object ON object_events(object_id, seen_at DESC, id DESC);
   CREATE INDEX IF NOT EXISTS objects_kind ON objects(kind);
   CREATE INDEX IF NOT EXISTS rooms_building ON rooms(building_id);
   CREATE INDEX IF NOT EXISTS camera_placements_room ON camera_placements(building_id, room_id);
@@ -146,6 +160,18 @@ ensureColumn('alerts', 'last_seen_at', 'TEXT');
 // Which account an object belongs to. Sightings and alerts belong to their
 // object's owner. Everything from before accounts belongs to the admin (id 1).
 ensureColumn('objects', 'owner_id', 'INTEGER NOT NULL DEFAULT 1');
+// Archived objects keep their sightings, alerts and details but disappear from
+// the Detections page until restored. Tracked description fields are editable
+// there and stored for every object, not only vehicles.
+ensureColumn('objects', 'archived', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('objects', 'color', 'TEXT');
+ensureColumn('objects', 'vehicle_type', 'TEXT');
+ensureColumn('objects', 'make', 'TEXT');
+ensureColumn('objects', 'model', 'TEXT');
+ensureColumn('objects', 'license_plate', 'TEXT');
+ensureColumn('objects', 'action', 'TEXT');
+ensureColumn('objects', 'notes', 'TEXT');
+ensureColumn('objects', 'details_updated_at', 'TEXT');
 // Floor-plan coordinates for each room. Values are percentages of the
 // building outline so the plan scales with the browser window.
 ensureColumn('rooms', 'x', 'REAL');
@@ -660,6 +686,7 @@ function objectRow(row) {
     kind: row.kind,
     name: row.name,
     named: Boolean(row.named),
+    archived: Boolean(row.archived),
     candidateOf: row.candidate_of || null,
     candidateScore: row.candidate_score ?? null,
     candidateName: row.candidate_name || null,
@@ -669,6 +696,14 @@ function objectRow(row) {
     latestSnapshot: row.latest_snapshot || null,
     latestCamera: row.latest_camera || null,
     latestConfidence: row.latest_confidence ?? null,
+    color: row.color || '',
+    vehicleType: row.vehicle_type || '',
+    make: row.make || '',
+    model: row.model || '',
+    licensePlate: row.license_plate || '',
+    action: row.action || '',
+    notes: row.notes || '',
+    detailsUpdatedAt: row.details_updated_at || null,
   };
 }
 
@@ -680,12 +715,15 @@ const LATEST = `o.*,
 
 // Named objects have already been dealt with. They stay in the database and in
 // alerts, but only still-unnamed objects (including low-confidence possible
-// matches to a named person) appear here for review.
-export function listObjects(ownerId, kind, all = false) {
-  const named = all ? '' : 'AND o.named = 0';
-  const rows = kind
-    ? db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.owner_id = ? AND kind = ? ${named} AND o.sightings >= ? ORDER BY last_seen_at DESC, created_at DESC`).all(ownerId, kind, MIN_SIGHTINGS)
-    : db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.owner_id = ? AND o.sightings >= ? ${named} ORDER BY last_seen_at DESC, created_at DESC`).all(ownerId, MIN_SIGHTINGS);
+// matches to a named person) appear in the default naming view. `all` includes
+// named objects; `archived` switches to the archive instead of active objects.
+export function listObjects(ownerId, kind, all = false, archived = false) {
+  const where = ['o.owner_id = ?', 'o.sightings >= ?', 'o.archived = ?'];
+  const args = [ownerId, MIN_SIGHTINGS, archived ? 1 : 0];
+  if (!all) where.push('o.named = 0');
+  if (kind) { where.push('o.kind = ?'); args.push(kind); }
+  const rows = db.prepare(`SELECT ${LATEST} FROM objects o WHERE ${where.join(' AND ')}
+    ORDER BY last_seen_at DESC, created_at DESC`).all(...args);
   return rows.map(objectRow);
 }
 
@@ -794,7 +832,8 @@ function thresholdFor(row, kind) {
 // Pick the closest known object that is confident enough to absorb this image.
 // Objects are only ever matched against the same account's objects.
 export function findMatch(ownerId, kind, embedding, fingerprint) {
-  const candidates = db.prepare('SELECT * FROM objects WHERE owner_id = ? AND kind = ? AND (embedding IS NOT NULL OR fingerprint IS NOT NULL)').all(ownerId, kind);
+  const candidates = db.prepare(`SELECT * FROM objects WHERE owner_id = ? AND kind = ? AND archived = 0
+    AND (embedding IS NOT NULL OR fingerprint IS NOT NULL)`).all(ownerId, kind);
   let best = null;
   for (const row of candidates) {
     const score = scoreRow(row, kind, embedding, fingerprint);
@@ -809,7 +848,7 @@ export function findMatch(ownerId, kind, embedding, fingerprint) {
 export function findReviewCandidate(ownerId, kind, embedding, fingerprint) {
   if (kind !== 'person') return null;
   const candidates = db.prepare(`SELECT * FROM objects
-    WHERE owner_id = ? AND kind = ? AND named = 1 AND embedding IS NOT NULL`).all(ownerId, kind);
+    WHERE owner_id = ? AND kind = ? AND named = 1 AND archived = 0 AND embedding IS NOT NULL`).all(ownerId, kind);
   let best = null;
   for (const row of candidates) {
     const score = scoreRow(row, kind, embedding, fingerprint);
@@ -872,14 +911,114 @@ export function createObject(ownerId, kind, embedding, fingerprint, candidate = 
 export function renameObject(id, name) {
   const clean = typeof name === 'string' ? name.trim().slice(0, 64) : '';
   if (!clean) throw new Error('Name is required');
+  const previous = getObject(id);
   // A named object is done: confident sightings still alert, but its card
   // leaves the naming page unless a low-confidence possible match appears.
   const result = db.prepare('UPDATE objects SET name = ?, named = 1 WHERE id = ?').run(clean, id);
   if (!result.changes) throw new Error('Object not found');
+  if (previous && previous.name !== clean) recordEvent(id, 'name', clean);
   return getObject(id);
 }
 
-// Removing an object also removes its sightings and alerts (FK cascade).
+const DETAIL_COLUMNS = {
+  color: 'color',
+  vehicleType: 'vehicle_type',
+  make: 'make',
+  model: 'model',
+  licensePlate: 'license_plate',
+  action: 'action',
+  notes: 'notes',
+};
+const DETAIL_LABELS = {
+  color: 'Color',
+  vehicleType: 'Vehicle type',
+  make: 'Make',
+  model: 'Model',
+  licensePlate: 'License plate',
+  action: 'Action',
+  notes: 'Notes',
+};
+
+function recordEvent(objectId, kind, value, seenAt = new Date().toISOString(), camera = null) {
+  db.prepare(`INSERT INTO object_events(object_id, kind, value, seen_at, camera_id, camera_name)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(objectId, kind, value || null, seenAt, camera?.id || null, camera?.name || null);
+}
+
+// Editable description of any object. Empty strings clear a value; unknown keys
+// are ignored so a client cannot write arbitrary columns.
+export function updateObjectDetails(id, details = {}) {
+  const row = db.prepare('SELECT id FROM objects WHERE id = ?').get(id);
+  if (!row) throw new Error('Object not found');
+  const sets = [];
+  const args = [];
+  const changed = [];
+  for (const [key, column] of Object.entries(DETAIL_COLUMNS)) {
+    if (!Object.prototype.hasOwnProperty.call(details, key)) continue;
+    const raw = typeof details[key] === 'string' ? details[key].trim() : '';
+    const value = raw.slice(0, key === 'notes' ? 240 : 64) || null;
+    sets.push(`${column} = ?`);
+    args.push(value);
+    changed.push([key, value]);
+  }
+  if (!sets.length) return getObject(id);
+  const now = new Date().toISOString();
+  sets.push('details_updated_at = ?');
+  args.push(now, id);
+  db.prepare(`UPDATE objects SET ${sets.join(', ')} WHERE id = ?`).run(...args);
+  for (const [key, value] of changed) {
+    recordEvent(id, 'detail', `${DETAIL_LABELS[key]}: ${value || '(cleared)'}`, now);
+  }
+  return getObject(id);
+}
+
+// Archiving is reversible: sightings, alerts and tracked details stay intact.
+export function setObjectArchived(id, ownerId, archived) {
+  const object = getObject(id, ownerId);
+  if (!object) throw new Error('Object not found');
+  const value = archived ? 1 : 0;
+  const now = new Date().toISOString();
+  db.prepare('UPDATE objects SET archived = ?, details_updated_at = ? WHERE id = ?')
+    .run(value, now, id);
+  recordEvent(id, archived ? 'archived' : 'restored',
+    archived ? 'Moved to archive' : 'Restored to detected objects', now);
+  return getObject(id, ownerId);
+}
+
+export function listObjectEvents({ ownerId, objectId = null, limit = 100 } = {}) {
+  const where = ['o.owner_id = ?'];
+  const args = [ownerId];
+  if (objectId) { where.push('e.object_id = ?'); args.push(objectId); }
+  const rows = db.prepare(`SELECT e.*, o.name AS object_name, o.identifier
+    FROM object_events e JOIN objects o ON o.id = e.object_id
+    WHERE ${where.join(' AND ')} ORDER BY e.seen_at DESC, e.id DESC LIMIT ?`)
+    .all(...args, Math.min(Number(limit) || 100, 400));
+  return rows.map((row) => ({
+    id: row.id,
+    objectId: row.object_id,
+    objectName: row.object_name,
+    identifier: row.identifier,
+    kind: row.kind,
+    value: row.value || '',
+    seenAt: row.seen_at,
+    cameraId: row.camera_id || null,
+    cameraName: row.camera_name || null,
+  }));
+}
+
+// One payload for the detail pop-up: current record, its sightings and its
+// edit/archive history. Ownership is enforced by getObject().
+export function getObjectDetails(ownerId, id) {
+  const object = getObject(id, ownerId);
+  if (!object) return null;
+  return {
+    object,
+    sightings: listSightings({ ownerId, objectId: id, limit: 24 }),
+    events: listObjectEvents({ ownerId, objectId: id, limit: 24 }),
+  };
+}
+
+// Removing an object also removes its sightings, alerts and event history (FK cascade).
 // Only return files no other sighting still references — snapshots are shared
 // when two sightings captured the identical frame.
 export function deleteObject(id) {
@@ -915,10 +1054,11 @@ function sightingRow(row) {
     confidence: row.confidence,
     bbox: json(row.bbox, []),
     snapshot: row.snapshot,
+    archived: Boolean(row.archived),
   };
 }
 
-const SIGHTING_SELECT = `SELECT s.*, o.name, o.identifier, o.kind FROM sightings s
+const SIGHTING_SELECT = `SELECT s.*, o.name, o.identifier, o.kind, o.archived FROM sightings s
                          JOIN objects o ON o.id = s.object_id`;
 
 export function listSightings({ ownerId, objectId, cameraId, kind, limit = 60 } = {}) {
@@ -936,7 +1076,8 @@ export function listSightings({ ownerId, objectId, cameraId, kind, limit = 60 } 
 // visible and nameable), then stop recording while it stays in view. A later
 // arrival is a new sighting. The gap guards against brief detection flicker.
 export function recordSighting({ object, camera, confidence, bbox, snapshot, seenAt, sightingGapMs, alertCooldownMs, wasPresent }) {
-  const count = db.prepare('SELECT sightings FROM objects WHERE id = ?').get(object.id).sightings;
+  const current = db.prepare('SELECT sightings, archived FROM objects WHERE id = ?').get(object.id);
+  const count = current.sightings;
   const buildingUp = count < MIN_SIGHTINGS;
   const last = db.prepare(`SELECT seen_at FROM sightings WHERE object_id = ? AND camera_id = ? ORDER BY seen_at DESC LIMIT 1`)
     .get(object.id, camera.id);
@@ -959,7 +1100,13 @@ export function recordSighting({ object, camera, confidence, bbox, snapshot, see
     WHERE object_id = ? AND camera_id = ? ORDER BY last_at DESC LIMIT 1`)
     .get(object.id, camera.id);
   const quiet = lastAlert && (Date.parse(seenAt) - Date.parse(lastAlert.last_at)) < alertCooldownMs;
-  if (seen >= MIN_SIGHTINGS && !quiet) {
+  // An unnamed object gets one introduction alert. After that it stays silent
+  // until someone names it; naming it opts it back into normal alerts.
+  const firstAlert = !db.prepare('SELECT 1 FROM alerts WHERE object_id = ? LIMIT 1').get(object.id);
+  // An archived object is no longer being tracked; keep its history but never
+  // create or fold alerts for it until it is restored.
+  const mayAlert = !current.archived && (Boolean(object.named) || firstAlert);
+  if (seen >= MIN_SIGHTINGS && !quiet && mayAlert) {
     const message = `${object.name} showed up in camera ${camera.name}`;
     // Repeat sightings fold into one unacknowledged alert so the dropdown and
     // the clip folder don't grow with every re-arrival.
@@ -1213,8 +1360,9 @@ export function ackAlerts(ownerId, ids, all = false) {
 
 export function counts(ownerId) {
   return {
-    objects: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE owner_id = ? AND sightings >= ? AND named = 0').get(ownerId, MIN_SIGHTINGS).n,
-    tracked: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE owner_id = ?').get(ownerId).n,
+    objects: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE owner_id = ? AND sightings >= ? AND named = 0 AND archived = 0').get(ownerId, MIN_SIGHTINGS).n,
+    tracked: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE owner_id = ? AND archived = 0').get(ownerId).n,
+    archived: db.prepare('SELECT COUNT(*) AS n FROM objects WHERE owner_id = ? AND archived = 1').get(ownerId).n,
     sightings: db.prepare(`SELECT COUNT(*) AS n FROM sightings s JOIN objects o ON o.id = s.object_id WHERE o.owner_id = ? AND o.sightings >= ?`).get(ownerId, MIN_SIGHTINGS).n,
     alerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE o.owner_id = ? AND o.sightings >= ?`).get(ownerId, MIN_SIGHTINGS).n,
     unreadAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE o.owner_id = ? AND a.ack = 0 AND o.sightings >= ?`).get(ownerId, MIN_SIGHTINGS).n,

@@ -12,8 +12,8 @@ import { gridUrl, hdUrl, isTest, mediaClipPath } from './cameras.js';
 export const ALERT_CLIP_DIR = path.join(DATA_DIR, 'alert-clips');
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const CLIP_VIDEO = [
-  '-vf', "scale='min(1920,iw)':-2", '-r', '30', '-an',
-  '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+  '-vf', "scale='min(1920,iw)':-2", '-r', '15', '-an',
+  '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
 ];
 const CLIP_SECONDS = 10;
 // HLS segments are two seconds. Starting four segments back and dropping the
@@ -21,7 +21,7 @@ const CLIP_SECONDS = 10;
 // records five seconds after it.
 const HLS_START_INDEX = -4;
 const HLS_SKIP_SECONDS = 3;
-const CLIP_TIMEOUT_MS = 45_000;
+const CLIP_TIMEOUT_MS = 120_000;
 
 function inputArgs(url) {
   const clipFile = mediaClipPath(url);
@@ -109,7 +109,11 @@ export function removeAlertClip(name) {
 
 // Full quality when there is a separate main stream; otherwise the grid feed.
 // `false` asks ffmpeg for an H.264 variant the browser can always play.
+// Test cameras are generated locally (or backed by a seekable file), so they
+// go straight to direct capture instead of starting a second HLS encoder that
+// would compete with the live grid for CPU.
 async function sourceFor(camera) {
+  if (isTest(camera.url) || isClip(camera.url)) return null;
   const variant = await streams.hdVariantFor(camera, false).catch(() => null);
   if (!variant) {
     const dir = path.join(STREAM_DIR, `${camera.id}_grid`);
@@ -129,12 +133,16 @@ export async function recordAlertClip(camera, output) {
   fs.rmSync(temp, { force: true });
   try {
     const source = await sourceFor(camera);
-    try {
-      await recordHls(source.playlist, temp, source.startIndex);
-    } catch (hlsErr) {
-      console.warn(`HD clip remux failed, retrying direct capture: ${hlsErr.message}`);
-      fs.rmSync(temp, { force: true });
+    if (!source) {
       await recordDirect(camera, temp);
+    } else {
+      try {
+        await recordHls(source.playlist, temp, source.startIndex);
+      } catch (hlsErr) {
+        console.warn(`HD clip remux failed, retrying direct capture: ${hlsErr.message}`);
+        fs.rmSync(temp, { force: true });
+        await recordDirect(camera, temp);
+      }
     }
     fs.renameSync(temp, output);
   } catch (err) {

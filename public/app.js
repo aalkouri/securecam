@@ -1713,6 +1713,8 @@ const alertsWrap = document.getElementById('alerts-wrap');
 const alertsBtn = document.getElementById('alerts-btn');
 const alertsDropdown = document.getElementById('alerts-dropdown');
 const alertsList = document.getElementById('alerts-list');
+const recentSightings = document.getElementById('recent-sightings');
+const archivedObjectsBtn = document.getElementById('archived-objects-btn');
 const alertCount = document.getElementById('alert-count');
 const ackAllAlerts = document.getElementById('ack-all-alerts');
 const clipModal = document.getElementById('clip-modal');
@@ -1724,6 +1726,10 @@ const clipClose = document.getElementById('clip-close');
 let lastAlertId = null;
 let latestAlerts = [];
 let activeClipAlert = null;
+// Pop-ups are global, not one per alert. The dropdown and badge still update
+// immediately; only the on-screen toast is spaced out.
+let lastToastAt = 0;
+let toastCooldownMs = 300_000;
 // Alert clips are ten seconds long, centered on the moment the alert fired.
 const CLIP_CENTER_SECONDS = 5;
 
@@ -1745,6 +1751,22 @@ function renderAlertList() {
         </button>`;
     }).join('')
     : '<p class="hint">No alerts yet.</p>';
+}
+
+// Archived objects stay in the sightings feed, so they are still reachable
+// here even after they leave the Detections page.
+function renderRecentSightings(rows) {
+  recentSightings.innerHTML = rows.length
+    ? rows.map((s) => `
+        <button type="button" class="alert-item sighting-item" data-sighting="${esc(s.objectId)}" data-archived="${s.archived ? '1' : '0'}">
+          ${s.snapshot ? `<img src="${snapshotUrl(s.snapshot)}" alt="" class="alert-thumb">` : ''}
+          <span class="alert-text">
+            <strong>${esc(s.objectName)}${s.archived ? ' · archived' : ''}</strong>
+            <span class="hint">${esc(s.cameraName)} · ${when(s.seenAt)}</span>
+          </span>
+          <span class="alert-play">details</span>
+        </button>`).join('')
+    : '<p class="hint">No recent sightings.</p>';
 }
 
 function setAlertsOpen(open) {
@@ -1833,6 +1855,18 @@ alertsList.addEventListener('click', async (e) => {
   } catch { /* still let the user view the media */ }
   pollAlerts();
   openClip(alert);
+});
+recentSightings.addEventListener('click', (e) => {
+  const button = e.target.closest('[data-sighting]');
+  if (!button) return;
+  e.stopPropagation();
+  setAlertsOpen(false);
+  openObjectDetails(button.dataset.sighting);
+});
+archivedObjectsBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  setAlertsOpen(false);
+  location.href = '/detections.html?view=archived';
 });
 clipClose.addEventListener('click', closeClip);
 clipModal.addEventListener('click', (e) => { if (e.target === clipModal) closeClip(); });
@@ -1927,12 +1961,15 @@ archiveClips.addEventListener('click', (e) => {
 
 async function pollAlerts() {
   try {
-    const [alerts, status] = await Promise.all([
+    const [alerts, status, sightings] = await Promise.all([
       api('/api/alerts?limit=40'),
       api('/api/detection/status'),
+      api('/api/sightings?limit=8'),
     ]);
     latestAlerts = alerts;
     renderAlertList();
+    renderRecentSightings(sightings);
+    toastCooldownMs = Number(status.alertCooldownMs) || 300_000;
     const unread = status.unreadAlerts || 0;
     alertCount.textContent = unread;
     alertCount.classList.toggle('hidden', !unread);
@@ -1942,7 +1979,12 @@ async function pollAlerts() {
     const newest = alerts[0]?.id || 0;
     if (lastAlertId === null) lastAlertId = newest;
     else {
-      for (const alert of alerts.filter((a) => a.id > lastAlertId).reverse()) showToast(alert);
+      const now = Date.now();
+      for (const alert of alerts.filter((a) => a.id > lastAlertId).reverse()) {
+        if (now - lastToastAt < toastCooldownMs) break;
+        showToast(alert);
+        lastToastAt = now;
+      }
       lastAlertId = newest;
     }
   } catch { /* api() handles authentication failures */ }

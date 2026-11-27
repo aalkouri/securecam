@@ -155,11 +155,17 @@ Every enabled camera is sampled for a frame every few seconds. Detection runs
 locally with ONNX Runtime — nothing is sent to a cloud service. It recognises
 cars, trucks, buses, motorcycles, bicycles, people, cats and dogs. Known
 objects are given a permanent ID such as `CAR-0001`; click **Detection** in the
-header to rename one and browse its sightings. Alerts live on the camera
-dashboard under the **Alerts** button, with messages like
+header to rename one, inspect all its data and browse its sightings. Alerts live
+on the camera dashboard under the **Alerts** button, with messages like
 *"Blue truck showed up in camera Driveway"*. Clicking an alert plays the saved
 ten-second clip from that camera, starting at the alert with five seconds before
-and five seconds after it available on the timeline.
+and five seconds after it available on the timeline. The dropdown also lists
+**Recent sightings** (including archived objects) and has an **Archived objects**
+link permanently at the bottom. Clicking a detected object or a recent sighting
+opens a pop-up with every stored field, its sightings and its change history.
+On-screen toasts are throttled to at most one per alert-cooldown period, even
+when several alerts arrive together; the dropdown and badge still update
+immediately.
 
 To keep single glimpses from becoming noise, an object is only shown and only
 raises an alert once it has been seen **more than twice** (3 sightings). It is
@@ -173,12 +179,31 @@ named by their SHA-256, so looping test footage cannot fill the folder with
 duplicate JPEGs; unused files are cleaned up on startup. The Detections page has
 separate **Objects to name**, **People**, **Vehicles** and **Animals** buttons so you can
 work through one group at a time. The page loads once when opened — it never
-refreshes itself while you are typing. Type a name and press **Confirm** to save
-it; **View Sightings** jumps to that object's history, and the **×** on the photo
-removes the object (click it twice to confirm). Once an object is named it leaves
-this list: confident matches are handled automatically, while new face images
-that are 40% or less sure of the same person come back as a possible match to
-review. Reload to see anything new.
+refreshes itself while you are typing. Type a name and press **Confirm name** to
+save it; **View Sightings** jumps to that object's history, and clicking the card
+or **View details** opens a pop-up containing all of its information. Once an
+object is named it leaves the naming list: confident matches are handled
+automatically, while new face images that are 40% or less sure of the same person
+come back as a possible match to review. Reload to see anything new.
+
+Every object has editable details stored in SQLite: **color**, **vehicle type**,
+**make**, **model**, **license plate**, **action** (for example parked, drove by,
+crashed) and free-form notes. Suggestions are offered for common values, but any
+value can be typed. Every change is written to an event history table, which is
+shown in the card and in the detail pop-up.
+
+The **×** on a card opens a confirmation dialog: **Archive object** stops
+tracking that object without deleting anything. Its sightings, alerts and
+details remain in SQLite and it continues to appear under Recent sightings in
+the Alerts dropdown. The **Archived** tab is always last on the Detections page
+and lists every archived object; **Restore to detected objects** puts one back.
+Archived objects are never matched against new detections or used to raise
+alerts until they are restored.
+
+An unnamed object raises only its **first** alert, so you know it was found.
+After that it stays silent — no extra alerts or pop-ups just because it came
+back into view — until you give it a name on the Detections page. Once named, its
+future appearances can alert again, still within the cooldown below.
 
 Repeats are collapsed: an object is recorded just three times so it can be
 named, then no more rows are added while it stays in view. Leaving and returning

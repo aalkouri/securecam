@@ -19,6 +19,7 @@ import { ALERT_CLIP_DIR, removeAlertClip } from './clips.js';
 import { startArchiveJob, listArchives, extractArchive, archiveClipPath } from './archives.js';
 import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
+  updateObjectDetails, setObjectArchived, listObjectEvents, getObjectDetails,
   listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots,
   consolidateAlerts, pruneOldAlerts, closeDatabase, ownsSnapshot,
   listBuildings, createBuilding, createRoom, updateRoomLayout, updateBuildingLayout,
@@ -359,7 +360,7 @@ app.post('/api/detection/settings', requireAdmin, (req, res) => {
 
 app.get('/api/objects', (req, res) => {
   const kind = typeof req.query.kind === 'string' ? req.query.kind : null;
-  res.json(listObjects(req.user.id, kind, req.query.all === '1'));
+  res.json(listObjects(req.user.id, kind, req.query.all === '1', req.query.archived === '1'));
 });
 
 // Objects, sightings, alerts, snapshots and clips belong to one account.
@@ -370,10 +371,28 @@ app.use('/api/objects/:id', (req, res, next) => {
 
 app.patch('/api/objects/:id', (req, res) => {
   try {
-    res.json(renameObject(req.params.id, req.body?.name));
+    const body = req.body || {};
+    // Confirming a name marks the object as named; saving description fields
+    // alone does not change the naming workflow.
+    if (typeof body.name === 'string' && !body.archived) renameObject(req.params.id, body.name);
+    res.json(updateObjectDetails(req.params.id, body));
   } catch (err) {
     res.status(err.message === 'Object not found' ? 404 : 400).json({ error: err.message });
   }
+});
+
+app.post('/api/objects/:id/archive', (req, res) => {
+  try {
+    res.json(setObjectArchived(req.params.id, req.user.id, req.body?.archived !== false));
+  } catch (err) {
+    res.status(err.message === 'Object not found' ? 404 : 400).json({ error: err.message });
+  }
+});
+
+app.get('/api/objects/:id/details', (req, res) => {
+  const details = getObjectDetails(req.user.id, req.params.id);
+  if (!details) return res.status(404).json({ error: 'Object not found' });
+  res.json(details);
 });
 
 app.delete('/api/objects/:id', (req, res) => {
@@ -403,6 +422,14 @@ app.get('/api/sightings', (req, res) => {
     objectId: typeof req.query.objectId === 'string' ? req.query.objectId : null,
     cameraId: typeof req.query.cameraId === 'string' ? req.query.cameraId : null,
     kind: typeof req.query.kind === 'string' ? req.query.kind : null,
+    limit: req.query.limit,
+  }));
+});
+
+app.get('/api/object-events', (req, res) => {
+  res.json(listObjectEvents({
+    ownerId: req.user.id,
+    objectId: typeof req.query.objectId === 'string' ? req.query.objectId : null,
     limit: req.query.limit,
   }));
 });

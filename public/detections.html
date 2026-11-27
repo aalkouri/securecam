@@ -57,6 +57,7 @@
         <button type="button" class="tab" data-group="person">People</button>
         <button type="button" class="tab" data-group="vehicles">Vehicles</button>
         <button type="button" class="tab" data-group="animals">Animals</button>
+        <button type="button" class="tab tab-archived" data-group="archived" id="archived-tab">Archived</button>
       </div>
       <p class="hint" id="objects-note">An object appears here only after it has been seen more than twice. Once you confirm a name, that object leaves this list and confident matches are handled automatically. New images that are 40% or less sure of the same person come back here for review. Reload the page to see anything new.</p>
       <div id="objects" class="object-grid"></div>
@@ -73,6 +74,35 @@
     </section>
   </main>
 
+  <datalist id="color-options">
+    <option value="Black"><option value="White"><option value="Silver"><option value="Gray">
+    <option value="Red"><option value="Blue"><option value="Green"><option value="Yellow">
+    <option value="Orange"><option value="Purple"><option value="Brown"><option value="Other">
+  </datalist>
+  <datalist id="vehicle-type-options">
+    <option value="Sedan"><option value="SUV"><option value="Truck"><option value="Pickup">
+    <option value="Van"><option value="Coupe"><option value="Hatchback"><option value="Wagon">
+    <option value="Motorcycle"><option value="Bicycle"><option value="Bus"><option value="Other">
+  </datalist>
+  <datalist id="action-options">
+    <option value="Parked"><option value="Drove by"><option value="Arrived"><option value="Left">
+    <option value="Stopped"><option value="Reversed"><option value="Turned"><option value="Backed in">
+    <option value="Crashed"><option value="Speeding"><option value="Followed another vehicle"><option value="Unknown">
+  </datalist>
+
+  <dialog id="archive-dialog" class="confirm-dialog">
+    <form method="dialog">
+      <h3>Stop tracking this object?</h3>
+      <p class="hint" id="archive-dialog-text"></p>
+      <p class="hint">Its sightings, alerts and details are kept. You can find it under Recent sightings and restore it from the Archived tab at any time.</p>
+      <div class="dialog-actions">
+        <button value="cancel">Cancel</button>
+        <button value="archive" class="danger">Archive object</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/object-details.js"></script>
   <script src="/detections.js"></script>
 </body>
 </html>
