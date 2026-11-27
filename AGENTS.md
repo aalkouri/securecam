@@ -149,6 +149,26 @@ should set `HOST=127.0.0.1` explicitly (real env vars win over `.env`).
 Sessions are in memory, so restarting the server signs everyone out. Don't kill
 node or ffmpeg processes you didn't start.
 
+## Production (DigitalOcean droplet)
+
+The owner hosts a copy at **https://securecam.alkouri.com** on the
+`games-server` droplet (138.197.207.219, 1 vCPU / 2 GB, shared with two games;
+SSH alias `games-server`, user `deploy`). Everything lives in
+`/home/deploy/securecam/`: `app/` (code), `data/` (its own login, cameras,
+database) and `node/` (Node 24; the system Node 18 belongs to the games and is
+too old for `node:sqlite`). Caddy terminates HTTPS and proxies to
+`127.0.0.1:8082`; the systemd unit `securecam` sets `TRUST_PROXY=1`.
+
+- **Deploy with `npm run deploy`** (scripts/deploy.ps1): uploads committed
+  `HEAD`, runs `npm ci`, restarts the service. This repo has no GitHub remote,
+  so unlike the games there is no pull-on-push; nothing deploys by itself.
+- `scripts/droplet-setup.sh` is the one-time root part (ffmpeg, service,
+  sudoers entry, Caddy site). `deploy` can only `systemctl restart securecam`.
+- The droplet cannot reach cameras on the owner's home network. Until a link
+  exists (VPN such as Tailscale/WireGuard), it only runs the `test://demo`
+  camera. Don't put heavy sources there: one shared vCPU.
+- The service is capped (`MemoryMax=1G`, low CPU weight) so the games win.
+
 ## Working alongside another assistant
 
 - Run `git status` and `git diff` before editing; someone else may have
