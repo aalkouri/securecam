@@ -80,7 +80,7 @@ export function requireAuth(req, res, next) {
   if (req.path.startsWith('/api/') || req.path.startsWith('/streams/')) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
-  return res.redirect('/login.html');
+  return res.redirect('/login');
 }
 
 export function requireAdmin(req, res, next) {

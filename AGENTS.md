@@ -34,6 +34,17 @@ h264 even when the stream is H.265). RTSP must be enabled in the Reolink app.
 | `server/detection.js` | Periodic frame capture, detection loop, alert creation |
 | `public/` | `index.html` + `app.js` (dashboard), `detections.html` + `detections.js`, `login.html`/`setup.html`/`signup.html`/`forgot.html`/`reset.html` + `login.js` + `auth.css`, `style.css` |
 
+## Public home page
+
+Signed-out visitors to `/` get `public/home.html` (+ `home.css`, `home.js`), a
+marketing page with the owner's logo; signed-in visitors get the dashboard at
+the same address. `/login`, `/signup`, `/forgot` and `/reset` are short
+addresses for the `.html` pages. Files a signed-out visitor needs must be
+listed in `PAGES` / `PUBLIC_ASSETS` in `server/accounts.js`; everything else in
+`public/` is behind sign-in. The logo files (`logo-mark*.png`, `favicon.png`,
+`logo-full.jpg`) are cut from the owner's artwork. **Only claim on the home
+page what the app really does** (no invented customer counts or reviews).
+
 ## Accounts (multi-user)
 
 Anyone can create an account (the owner's decision), and **every account only

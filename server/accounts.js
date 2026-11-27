@@ -8,7 +8,7 @@ import {
 } from './auth.js';
 import {
   normalizeEmail, findByEmail, findByGoogleSub, createUser, setPassword,
-  markVerified, linkGoogle, createToken, consumeToken,
+  markVerified, linkGoogle, createToken, consumeToken, getUser,
 } from './users.js';
 import { config, googleEnabled, mailEnabled, baseUrl } from './config.js';
 import { sendLinkEmail } from './mail.js';
@@ -18,6 +18,9 @@ export const MIN_PASSWORD = 7;
 const VERIFY_TTL = 24 * 60 * 60 * 1000;
 const RESET_TTL = 60 * 60 * 1000;
 const PAGES = ['/login.html', '/setup.html', '/signup.html', '/forgot.html', '/reset.html', '/style.css', '/auth.css', '/login.js'];
+
+// The public home page and the logo, which signed-out visitors need too.
+const PUBLIC_ASSETS = ['/home.css', '/home.js', '/logo-mark.png', '/logo-mark-96.png', '/logo-full.jpg', '/favicon.png'];
 
 function validPassword(password) {
   return typeof password === 'string' && password.length >= MIN_PASSWORD && password.length <= 200;
@@ -52,7 +55,20 @@ function sendVerify(req, user) {
 }
 
 export function registerAccountRoutes(app, publicDir) {
-  app.get(PAGES, (req, res) => res.sendFile(path.join(publicDir, req.path)));
+  app.get([...PAGES, ...PUBLIC_ASSETS], (req, res) => res.sendFile(path.join(publicDir, req.path)));
+
+  // Short addresses for the pages people type or link to.
+  for (const name of ['login', 'signup', 'forgot', 'reset']) {
+    app.get(`/${name}`, (req, res) => res.sendFile(path.join(publicDir, `${name}.html`)));
+  }
+
+  // The front door: the public home page for visitors, the dashboard (served
+  // further down, behind requireAuth) for someone who is signed in.
+  app.get('/', (req, res, next) => {
+    if (!isSetupComplete()) return res.redirect('/setup.html');
+    if (req.session?.uid && getUser(req.session.uid)) return next();
+    res.sendFile(path.join(publicDir, 'home.html'));
+  });
 
   // What the sign-in pages should offer.
   app.get('/api/setup', (req, res) => res.json({
