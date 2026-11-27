@@ -69,9 +69,9 @@
       <div class="floorplan-head">
         <div>
           <h2 id="floorplan-title">Building layout</h2>
-          <p class="hint">Click a camera below to show its feed at the top. Drag rooms or camera
-            icons to move them, use the corner icons to resize, or click a title to rename. Rotate a
-            camera with the button at its top right.</p>
+          <p class="hint">Click a camera below to show its feed at the top. Its top-left circle
+            steps it through twelve edge positions; its top-right circle rotates it. Drag rooms to
+            move them, use the corner icons to resize, or click a title to rename.</p>
         </div>
         <div class="floorplan-controls">
           <label for="floorplan-building">Building</label>
@@ -320,7 +320,6 @@
           <button type="button" class="plan-room-close" title="Delete room" aria-label="Delete room">✕</button>
         </span>
       </div>
-      <span class="plan-count"></span>
       <button type="button" class="plan-add-cam">+ camera</button>
       <div class="plan-resize" role="separator" aria-label="Resize room" tabindex="0" title="Drag to resize">
         <svg class="resize-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -331,7 +330,8 @@
   </template>
 
   <template id="camera-marker-template">
-    <div class="plan-camera" role="group" tabindex="0" aria-label="Camera. Click to view, drag to move.">
+    <div class="plan-camera" role="group" tabindex="0" aria-label="Camera. Click to view, top-left circle moves it, top-right circle rotates it.">
+      <button type="button" class="plan-camera-position" title="Move camera to next edge position" aria-label="Move camera to next edge position">⌖</button>
       <button type="button" class="plan-camera-rotate" title="Rotate camera clockwise" aria-label="Rotate camera clockwise">↻</button>
       <span class="plan-camera-icon" aria-hidden="true"><img src="/camera-marker.png" alt=""></span>
       <span class="plan-camera-name"></span>

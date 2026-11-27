@@ -97,7 +97,6 @@ const noticeOk = document.getElementById('notice-ok');
 let cameraCounts = new Map();
 let activeRoomDrag = null;
 let activeRoomResize = null;
-let activeCameraDrag = null;
 let activeBuildingResize = null;
 const planCameraEls = new Map(); // camera id -> floor-plan marker
 let renameTarget = null;
@@ -655,11 +654,6 @@ function setRoomVars(el, layout) {
   el.style.setProperty('--h', h.toFixed(2));
 }
 
-function cameraCountText(roomId) {
-  const count = cameraCounts.get(roomId) || 0;
-  return count ? `${count} camera${count === 1 ? '' : 's'}` : '';
-}
-
 function renderFloorplan() {
   const remembered = localStorage.getItem('securecam.building');
   const wanted = planSelect.value || remembered || buildings[0]?.id || '';
@@ -679,9 +673,6 @@ function renderFloorplan() {
 }
 
 function updateFloorplanCounts() {
-  for (const el of planRoomsEl.querySelectorAll('.plan-room')) {
-    el.querySelector('.plan-count').textContent = cameraCountText(el.dataset.roomId);
-  }
   const building = currentPlanBuilding();
   const outside = cameras.filter((c) => c.outside && c.buildingId === building?.id).length;
   planOutsideAdd.title = outside
@@ -826,8 +817,8 @@ function rectsOverlap(a, b, padding = 2) {
     || a.bottom + padding <= b.top || b.bottom + padding <= a.top);
 }
 
-// One marker may not sit on another, and an outside marker may not sit on the
-// outside-camera button. This is the same rule that keeps rooms off the title.
+// One marker may not sit on another, and a marker may not cover the controls
+// reserved for the room or the outside area.
 function markerCollision(el) {
   const rect = el.getBoundingClientRect();
   for (const other of planCameraEls.values()) {
@@ -841,49 +832,76 @@ function markerCollision(el) {
   return null;
 }
 
-function camerasStillValid() {
-  for (const el of planCameraEls.values()) {
-    if (!el.isConnected) continue;
-    if (markerCollision(el)) return false;
+function markerHitsRoomControls(el) {
+  const room = el.parentElement;
+  if (!room?.classList.contains('plan-room')) return false;
+  const box = el.getBoundingClientRect();
+  for (const selector of ['.plan-room-name', '.plan-room-close', '.plan-add-cam', '.plan-resize']) {
+    const control = room.querySelector(selector);
+    if (control && rectsOverlap(box, control.getBoundingClientRect(), 0)) return true;
   }
-  return true;
+  return false;
 }
 
-function clampInsideMarker(el, x, y) {
-  const bounds = el.parentElement.getBoundingClientRect();
-  const padX = Math.min(45, (el.offsetWidth / 2 + 6) / bounds.width * 100);
-  const padY = Math.min(45, (el.offsetHeight / 2 + 6) / bounds.height * 100);
-  return {
-    x: planPercent(x, padX, 100 - padX),
-    y: planPercent(y, padY, 100 - padY),
-  };
+// Twelve clockwise positions around a room: three per side, never in a corner.
+// Padding comes from the marker's own size so even a small room stays safe.
+function cameraEdgeSpots(el) {
+  const box = el.parentElement.getBoundingClientRect();
+  const padX = Math.min(45, (el.offsetWidth / 2 + 6) / box.width * 100);
+  const padY = Math.min(45, (el.offsetHeight / 2 + 6) / box.height * 100);
+  const leftX = padX;
+  const rightX = 100 - padX;
+  const topY = padY;
+  const bottomY = 100 - padY;
+  const alongX = [0.25, 0.5, 0.75].map((f) => planPercent(f * 100, leftX, rightX));
+  const alongY = [0.25, 0.5, 0.75].map((f) => planPercent(f * 100, topY, bottomY));
+  return [
+    { x: alongX[1], y: topY }, { x: alongX[2], y: topY },
+    { x: rightX, y: alongY[0] }, { x: rightX, y: alongY[1] }, { x: rightX, y: alongY[2] },
+    { x: alongX[2], y: bottomY }, { x: alongX[1], y: bottomY }, { x: alongX[0], y: bottomY },
+    { x: leftX, y: alongY[2] }, { x: leftX, y: alongY[1] }, { x: leftX, y: alongY[0] },
+    { x: alongX[0], y: topY },
+  ];
 }
 
-function clampOutsideMarker(el, x, y) {
+// Outside cameras use the same twelve-spot pattern around the building walls.
+function outsideCameraSpots(el) {
   const board = planBoard.getBoundingClientRect();
   const building = planOutline.getBoundingClientRect();
-  const padX = (el.offsetWidth / 2 + 6) / board.width * 100;
-  const padY = (el.offsetHeight / 2 + 6) / board.height * 100;
-  let cx = planPercent(x, padX, 100 - padX);
-  let cy = planPercent(y, padY, 100 - padY);
-  const bx1 = (building.left - board.left) / board.width * 100;
-  const bx2 = (building.right - board.left) / board.width * 100;
-  const by1 = (building.top - board.top) / board.height * 100;
-  const by2 = (building.bottom - board.top) / board.height * 100;
-  if (cx > bx1 - padX && cx < bx2 + padX && cy > by1 - padY && cy < by2 + padY) {
-    const distances = [
-      { side: 'left', value: cx - (bx1 - padX) },
-      { side: 'right', value: (bx2 + padX) - cx },
-      { side: 'top', value: cy - (by1 - padY) },
-      { side: 'bottom', value: (by2 + padY) - cy },
-    ].sort((a, b) => a.value - b.value);
-    const nearest = distances[0];
-    if (nearest.side === 'left') cx = bx1 - padX - 1;
-    if (nearest.side === 'right') cx = bx2 + padX + 1;
-    if (nearest.side === 'top') cy = by1 - padY - 1;
-    if (nearest.side === 'bottom') cy = by2 + padY + 1;
+  const padX = (el.offsetWidth / 2 + 8) / board.width * 100;
+  const padY = (el.offsetHeight / 2 + 8) / board.height * 100;
+  const left = (building.left - board.left) / board.width * 100;
+  const right = (building.right - board.left) / board.width * 100;
+  const top = (building.top - board.top) / board.height * 100;
+  const bottom = (building.bottom - board.top) / board.height * 100;
+  const topY = planPercent(top - padY, padY, 100 - padY);
+  const bottomY = planPercent(bottom + padY, padY, 100 - padY);
+  const leftX = planPercent(left - padX, padX, 100 - padX);
+  const rightX = planPercent(right + padX, padX, 100 - padX);
+  const mix = (a, b, f) => a + (b - a) * f;
+  const alongX = [0.25, 0.5, 0.75].map((f) => planPercent(mix(left, right, f), padX, 100 - padX));
+  const alongY = [0.25, 0.5, 0.75].map((f) => planPercent(mix(top, bottom, f), padY, 100 - padY));
+  return [
+    { x: alongX[1], y: topY }, { x: alongX[2], y: topY },
+    { x: rightX, y: alongY[0] }, { x: rightX, y: alongY[1] }, { x: rightX, y: alongY[2] },
+    { x: alongX[2], y: bottomY }, { x: alongX[1], y: bottomY }, { x: alongX[0], y: bottomY },
+    { x: leftX, y: alongY[2] }, { x: leftX, y: alongY[1] }, { x: leftX, y: alongY[0] },
+    { x: alongX[0], y: topY },
+  ];
+}
+
+function spotIndex(spots, marker) {
+  return spots.findIndex((spot) => Math.abs(spot.x - marker.x) < 0.6
+    && Math.abs(spot.y - marker.y) < 0.6);
+}
+
+function spotIsFree(el, spot, rotation) {
+  setMarkerVars(el, { ...spot, rotation });
+  if (markerCollision(el)) return false;
+  if (el.parentElement === planOutsideMarkers) {
+    return !rectsOverlap(el.getBoundingClientRect(), planOutline.getBoundingClientRect(), 0);
   }
-  return { x: planPercent(cx, padX, 100 - padX), y: planPercent(cy, padY, 100 - padY) };
+  return !markerHitsRoomControls(el);
 }
 
 async function saveCameraMarker(id, marker) {
@@ -909,23 +927,59 @@ async function rotateCameraMarker(id) {
   if (saved && el) setMarkerVars(el, saved);
 }
 
+// The top-left circle steps the marker through its twelve edge positions.
+async function cycleCameraPosition(id) {
+  const camera = cameras.find((c) => c.id === id);
+  const el = planCameraEls.get(id);
+  if (!camera || !el) return;
+  const marker = markerOf(camera);
+  const spots = el.parentElement === planOutsideMarkers
+    ? outsideCameraSpots(el)
+    : cameraEdgeSpots(el);
+  const current = spotIndex(spots, marker);
+  let chosen = null;
+  for (let step = 1; step <= spots.length; step += 1) {
+    const spot = spots[(current + step) % spots.length];
+    if (spotIsFree(el, spot, marker.rotation)) {
+      chosen = spot;
+      break;
+    }
+  }
+  if (!chosen) {
+    setMarkerVars(el, marker);
+    return;
+  }
+  const saved = await saveCameraMarker(id, { ...chosen, rotation: marker.rotation });
+  setMarkerVars(el, saved || marker);
+}
+
 function makeCameraMarker(camera) {
   const el = cameraMarkerTpl.content.firstElementChild.cloneNode(true);
   el.dataset.cameraId = camera.id;
   el.querySelector('.plan-camera-name').textContent = camera.name;
+  const position = el.querySelector('.plan-camera-position');
   const rotate = el.querySelector('.plan-camera-rotate');
-  rotate.addEventListener('pointerdown', (e) => e.stopPropagation());
+  for (const button of [position, rotate]) {
+    button.addEventListener('pointerdown', (e) => e.stopPropagation());
+  }
+  position.addEventListener('click', (e) => {
+    e.stopPropagation();
+    cycleCameraPosition(camera.id);
+  });
   rotate.addEventListener('click', (e) => {
     e.stopPropagation();
     rotateCameraMarker(camera.id);
   });
-  el.addEventListener('pointerdown', (e) => startCameraDrag(e, camera.id, el));
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('button')) return;
+    selectCamera(camera.id);
+  });
   el.addEventListener('keydown', (e) => handleCameraKeys(e, camera.id, el));
   return el;
 }
 
 function renderFloorplanCameras() {
-  if (activeCameraDrag || activeBuildingResize) return;
+  if (activeBuildingResize) return;
   const building = currentPlanBuilding();
   const rooms = [...planRoomsEl.querySelectorAll('.plan-room')];
   const seen = new Set();
@@ -955,66 +1009,6 @@ function renderFloorplanCameras() {
   }
 }
 
-function startCameraDrag(e, id, el) {
-  if (e.button !== 0 && e.pointerType === 'mouse') return;
-  if (e.target.closest('button')) return;
-  e.preventDefault();
-  const camera = cameras.find((c) => c.id === id);
-  if (!camera) return;
-  const outside = el.parentElement === planOutsideMarkers;
-  const marker = markerOf(camera);
-  const drag = {
-    id: e.pointerId, el, cameraId: id, outside,
-    bounds: (outside ? planBoard : el.parentElement).getBoundingClientRect(),
-    startX: e.clientX, startY: e.clientY,
-    origin: { ...marker }, current: { ...marker }, lastValid: { ...marker }, moved: false,
-  };
-  activeCameraDrag = drag;
-  el.classList.add('dragging');
-  el.setPointerCapture?.(e.pointerId);
-
-  const onMove = (ev) => {
-    const state = activeCameraDrag;
-    if (!state || ev.pointerId !== state.id) return;
-    const dx = (ev.clientX - state.startX) / state.bounds.width * 100;
-    const dy = (ev.clientY - state.startY) / state.bounds.height * 100;
-    const wanted = {
-      x: state.origin.x + dx,
-      y: state.origin.y + dy,
-      rotation: state.origin.rotation,
-    };
-    const point = state.outside
-      ? clampOutsideMarker(el, wanted.x, wanted.y)
-      : clampInsideMarker(el, wanted.x, wanted.y);
-    const candidate = { ...point, rotation: wanted.rotation };
-    setMarkerVars(el, candidate);
-    if (markerCollision(el)) {
-      setMarkerVars(el, state.lastValid);
-    } else {
-      state.current = candidate;
-      state.lastValid = candidate;
-      state.moved = true;
-    }
-  };
-
-  const onEnd = (ev) => {
-    const state = activeCameraDrag;
-    if (!state || ev.pointerId !== state.id) return;
-    el.removeEventListener('pointermove', onMove);
-    el.removeEventListener('pointerup', onEnd);
-    el.removeEventListener('pointercancel', onEnd);
-    el.releasePointerCapture?.(ev.pointerId);
-    el.classList.remove('dragging');
-    activeCameraDrag = null;
-    if (state.moved) saveCameraMarker(state.cameraId, state.current);
-    else selectCamera(state.cameraId);
-  };
-
-  el.addEventListener('pointermove', onMove);
-  el.addEventListener('pointerup', onEnd);
-  el.addEventListener('pointercancel', onEnd);
-}
-
 function handleCameraKeys(e, id, el) {
   if (e.target.closest('button')) return;
   if (e.key === 'Enter' || e.key === ' ') {
@@ -1029,30 +1023,11 @@ function handleCameraKeys(e, id, el) {
     rotateCameraMarker(id);
     return;
   }
-  const step = e.shiftKey ? 5 : 2;
-  let dx = 0;
-  let dy = 0;
-  if (e.key === 'ArrowLeft') dx = -step;
-  else if (e.key === 'ArrowRight') dx = step;
-  else if (e.key === 'ArrowUp') dy = -step;
-  else if (e.key === 'ArrowDown') dy = step;
-  else return;
-  e.preventDefault();
-  e.stopPropagation();
-  const camera = cameras.find((c) => c.id === id);
-  if (!camera) return;
-  const outside = el.parentElement === planOutsideMarkers;
-  const marker = markerOf(camera);
-  const point = outside
-    ? clampOutsideMarker(el, marker.x + dx, marker.y + dy)
-    : clampInsideMarker(el, marker.x + dx, marker.y + dy);
-  const candidate = { ...point, rotation: marker.rotation };
-  setMarkerVars(el, candidate);
-  if (markerCollision(el)) {
-    setMarkerVars(el, marker);
-    return;
+  if (e.key === 'p' || e.key === 'P') {
+    e.preventDefault();
+    e.stopPropagation();
+    cycleCameraPosition(id);
   }
-  saveCameraMarker(id, candidate);
 }
 
 // Re-clamp the layout when the board changes size; a room that was big enough
@@ -1060,7 +1035,7 @@ function handleCameraKeys(e, id, el) {
 window.addEventListener('resize', () => {
   clearTimeout(planResizeTimer);
   planResizeTimer = setTimeout(() => {
-    if (!activeRoomDrag && !activeRoomResize && !activeCameraDrag && !activeBuildingResize) {
+    if (!activeRoomDrag && !activeRoomResize && !activeBuildingResize) {
       renderFloorplanRooms();
       renderFloorplanCameras();
     }
@@ -1085,7 +1060,6 @@ function renderFloorplanRooms() {
       e.stopPropagation();
       openRename('room', room);
     });
-    el.querySelector('.plan-count').textContent = cameraCountText(room.id);
     const addButton = el.querySelector('.plan-add-cam');
     addButton.addEventListener('pointerdown', (e) => e.stopPropagation());
     addButton.addEventListener('click', (e) => {

@@ -216,7 +216,6 @@ body.admin-picking #alerts { display: none !important; }
   color: var(--plan-ink); font-size: 12px; line-height: 1; cursor: pointer;
 }
 .plan-room-close:hover { background: #fee2e2; border-color: #dc2626; color: #b91c1c; }
-.plan-count { font-size: 11px; color: var(--plan-muted); min-height: 14px; }
 .plan-add-cam {
   align-self: flex-start; padding: 4px 8px; border: 1px solid var(--plan-ink);
   border-radius: 5px; background: #fff; color: var(--plan-ink);
@@ -237,9 +236,8 @@ body.admin-picking #alerts { display: none !important; }
   left: calc(var(--cx, 50) * 1%); top: calc(var(--cy, 50) * 1%);
   width: 78px; transform: translate(-50%, -50%);
   display: flex; flex-direction: column; align-items: center; gap: 2px;
-  cursor: grab; touch-action: none; user-select: none; z-index: 2;
+  cursor: pointer; user-select: none; z-index: 2;
 }
-.plan-camera.dragging { cursor: grabbing; z-index: 5; }
 .plan-camera-icon {
   display: grid; place-items: center; width: 34px; height: 34px;
   border: 2px solid var(--plan-ink); border-radius: 50%; background: #fff;
@@ -254,13 +252,17 @@ body.admin-picking #alerts { display: none !important; }
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(37, 99, 235, .35), 0 2px 5px rgba(0, 0, 0, .2);
 }
-.plan-camera-rotate {
-  position: absolute; right: 10px; top: -4px; z-index: 1;
+.plan-camera-rotate, .plan-camera-position {
+  position: absolute; top: -4px; z-index: 1;
   display: grid; place-items: center; width: 20px; height: 20px; padding: 0;
   border: 1px solid var(--plan-ink); border-radius: 50%; background: #fff;
   color: var(--plan-ink); font-size: 13px; line-height: 1; cursor: pointer;
 }
-.plan-camera-rotate:hover { background: #eff6ff; border-color: #2563eb; color: #1d4ed8; }
+.plan-camera-rotate { right: 10px; }
+.plan-camera-position { left: 10px; }
+.plan-camera-rotate:hover, .plan-camera-position:hover {
+  background: #eff6ff; border-color: #2563eb; color: #1d4ed8;
+}
 .plan-camera-name {
   max-width: 100%; padding: 1px 4px; border: 1px solid var(--plan-ink); border-radius: 3px;
   background: rgba(255, 255, 255, .95); color: var(--plan-ink);

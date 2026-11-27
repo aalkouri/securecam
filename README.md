@@ -62,7 +62,11 @@ the **Building** drop-down to switch buildings. The black building outline has
 its own corner handle: dragging it resizes only the outline, never the grass or
 the reserved outside area, and it will not pass over a room, a camera marker or
 the outside controls. Drag rooms to rearrange them, or drag the corner icon to
-resize them; arrow keys also nudge a focused room or handle. Click the building
+resize them; arrow keys also nudge a focused room or handle. Camera markers are
+no longer dragged. The top-left circle on a marker steps the camera clockwise
+through twelve evenly spaced edge positions (three per side, never a corner),
+and the top-right circle rotates it 45°. Clicking anywhere else on the marker
+or its name selects that camera and shows its feed above. Click the building
 or room title (both use the same boxed label) to rename it, use
 **+ Room** to add another room, or use the **✕** on a room to delete it. A room
 with cameras cannot be deleted until those cameras are removed. Rooms cannot
@@ -70,12 +74,13 @@ move into the space reserved for the building name, cannot shrink below the
 size needed for their **+ camera** button, and cannot be moved or resized over
 a camera marker. Positions and sizes are saved per room in SQLite.
 
-Creating a camera adds a movable marker with its name underneath. Drag the
-marker within its room; outside cameras can only be dragged on the grass.
-Clicking the marker itself (not its round rotate button) replaces the feed
-above with that camera and scrolls it into view. The active marker is outlined.
-The round button at a marker's top right rotates it clockwise 45° per click — eight clicks make a
-full 360°. Markers may not overlap each other, the fixed
+Creating a camera adds a marker with its name underneath. Its top-left circle
+steps it clockwise through twelve edge positions (three per side, starting at
+the top middle); outside cameras use the same pattern just outside the building
+walls. Clicking anywhere else on the marker or its name replaces the feed above
+with that camera and scrolls it into view. The active marker is outlined. The
+round button at a marker's top right rotates it clockwise 45° per click — eight
+clicks make a full 360°. Markers may not overlap each other, the fixed
 **Outside** label in the top-left or the **+ Outside Camera** button in the
 bottom-left. The label cannot be edited. Use **+ Outside Camera** to add a
 camera that belongs to the building but sits outside its walls; its tile
