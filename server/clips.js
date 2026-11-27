@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './store.js';
 import { STREAM_DIR, streams } from './streams.js';
-import { gridUrl, hdUrl, isClip, clipPath } from './cameras.js';
+import { gridUrl, hdUrl, isTest, mediaClipPath } from './cameras.js';
 
 export const ALERT_CLIP_DIR = path.join(DATA_DIR, 'alert-clips');
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -19,14 +19,16 @@ const CLIP_SECONDS = 5;
 const CLIP_TIMEOUT_MS = 45_000;
 
 function inputArgs(url) {
-  if (url.startsWith('test://')) {
+  const clipFile = mediaClipPath(url);
+  if (clipFile) {
+    // A test:// alias may point to a real video in data/clips, so capture it
+    // the same way as an explicit clip:// URL.
+    return ['-stream_loop', '-1', '-re', '-readrate_initial_burst', '2', '-i', clipFile];
+  }
+  if (isTest(url)) {
     return ['-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=15'];
   }
   const args = [];
-  if (isClip(url)) {
-    args.push('-stream_loop', '-1', '-re', '-readrate_initial_burst', '2', '-i', clipPath(url));
-    return args;
-  }
   if (url.startsWith('rtsp')) args.push('-rtsp_transport', 'tcp', '-timeout', '10000000');
   args.push('-i', url);
   return args;

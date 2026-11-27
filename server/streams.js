@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './store.js';
-import { gridUrl, hdUrl, isClip, clipPath } from './cameras.js';
+import { gridUrl, hdUrl, isTest, mediaClipPath } from './cameras.js';
 
 export const STREAM_DIR = path.join(DATA_DIR, 'streams');
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -29,11 +29,12 @@ export const VARIANTS = ['grid', 'hd', 'hd-avc'];
 // Ask the camera what it's sending. Resolves { codec, width, height, audio }
 // (audio: whether there is a sound track) or throws.
 export function probe(url) {
-  if (url.startsWith('test://')) return Promise.resolve({ codec: 'test', width: 1920, height: 1080, audio: false });
+  const clipFile = mediaClipPath(url);
+  if (!clipFile && isTest(url)) return Promise.resolve({ codec: 'test', width: 1920, height: 1080, audio: false });
   return new Promise((resolve, reject) => {
     const args = ['-v', 'error'];
     if (url.startsWith('rtsp')) args.push('-rtsp_transport', 'tcp', '-timeout', '10000000');
-    args.push('-show_entries', 'stream=codec_type,codec_name,width,height', '-of', 'json', isClip(url) ? clipPath(url) : url);
+    args.push('-show_entries', 'stream=codec_type,codec_name,width,height', '-of', 'json', clipFile || url);
     const proc = spawn(FFPROBE, args, { windowsHide: true });
     let out = '';
     let err = '';
@@ -87,10 +88,11 @@ function testArgs(camera, variant) {
 
 function cameraArgs(url, codec, variant) {
   const input = [];
-  if (isClip(url)) {
+  const clipFile = mediaClipPath(url);
+  if (clipFile) {
     // Recorded clip: loop forever, played at real-time speed like a live feed.
     // The initial burst fills the first HLS segments quickly so playback starts sooner.
-    input.push('-stream_loop', '-1', '-re', '-readrate_initial_burst', '8', '-i', clipPath(url));
+    input.push('-stream_loop', '-1', '-re', '-readrate_initial_burst', '8', '-i', clipFile);
     // There's no separate low-res file, so shrink the clip for the grid.
     if (variant === 'grid') return [...input, '-vf', 'scale=640:-2', '-r', '15', ...X264];
   } else {
@@ -163,7 +165,8 @@ class StreamManager {
     const url = hdUrl(camera);
     if (!url) return null;
     if (viewerPlaysHevc) return 'hd';
-    const codec = url.startsWith('test://') ? 'test' : await codecFor(url).catch(() => null);
+    if (isTest(url) && !mediaClipPath(url)) return 'test';
+    const codec = await codecFor(url).catch(() => null);
     return codec === 'h264' ? 'hd' : 'hd-avc';
   }
 
@@ -229,7 +232,7 @@ class StreamManager {
     const url = variant === 'grid' ? gridUrl(camera) : hdUrl(camera);
     let videoArgs;
     try {
-      if (url.startsWith('test://')) {
+      if (isTest(url) && !mediaClipPath(url)) {
         videoArgs = testArgs(camera, variant);
       } else {
         videoArgs = cameraArgs(url, await codecFor(url), variant);

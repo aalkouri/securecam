@@ -55,10 +55,25 @@ supports it; otherwise the server converts them to H.264, which uses more CPU.
 The full view also plays the camera's sound, with a button to turn it on or off;
 the grid is always silent.
 
-Use `test://demo` (type *Other*) to try the app without any hardware.
+## Test cameras
 
-To loop a recorded video as a stand-in camera, put the file in `data/clips/`
-and add a camera of type *Other* with the URL `clip://your-file.mp4`.
+Choose *Other*, then pick **Built-in test camera** to add a sample feed without
+any hardware. The available short URLs are:
+
+| Feed | Stream URL |
+| --- | --- |
+| Demo pattern | `test://demo` |
+| Reolink sample | `test://reolink-sample` |
+| Reolink night/day | `test://reolink-night-day` |
+| Drive-thru | `test://drive-thru` |
+| City street | `test://city-street` |
+| Night crossing | `test://night-crossing` |
+
+The five video feeds loop files from `data/clips/`. Existing installations that
+used `clip://…` URLs are migrated to these `test://` aliases automatically.
+
+You can still loop another recorded video by putting it in `data/clips/` and
+adding a camera of type *Other* with the URL `clip://your-file.mp4`.
 
 ## Object detection
 

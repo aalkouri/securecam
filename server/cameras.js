@@ -8,20 +8,63 @@ import { DATA_DIR } from './store.js';
 export const CAMERA_TYPES = ['reolink', 'generic'];
 const URL_SCHEMES = /^(rtsp|rtsps|http|https|test|clip):\/\//i;
 
-// Recorded clips that can stand in for a camera live in data/clips/ and are
-// referenced as clip://<filename>. Only plain filenames are accepted, so a
-// camera URL can never point at an arbitrary file on disk.
+// Recorded clips that can stand in for a camera live in data/clips/. They can
+// be used as clip://<filename> or with one of these short test:// aliases,
+// which behave like the test://demo source when adding a camera.
 export const CLIP_DIR = path.join(DATA_DIR, 'clips');
 const CLIP_NAME = /^\w[\w .()-]*\.(mp4|mkv|mov|webm)$/i;
+export const TEST_CAMERAS = {
+  'reolink-sample': 'reolink-rlc810a-sample.mp4',
+  'reolink-night-day': 'reolink-rlc810a-night-day.mp4',
+  'drive-thru': 'clip-7409123-uhd.mp4',
+  'city-street': 'clip-5266802-uhd.mp4',
+  'night-crossing': 'clip-13973346-uhd.mp4',
+};
 
 export function isClip(url) {
   return typeof url === 'string' && url.toLowerCase().startsWith('clip://');
+}
+
+export function isTest(url) {
+  return typeof url === 'string' && url.toLowerCase().startsWith('test://');
 }
 
 // Absolute path of a clip:// URL, or null if the name is not allowed.
 export function clipPath(url) {
   const name = url.slice('clip://'.length);
   return CLIP_NAME.test(name) ? path.join(CLIP_DIR, name) : null;
+}
+
+// Resolve test://<alias> to its clip file. Unknown test URLs stay synthetic
+// (test://demo is the original test pattern).
+export function testClipPath(url) {
+  if (!isTest(url)) return null;
+  const raw = url.slice('test://'.length).split(/[/?#]/)[0];
+  let alias;
+  try { alias = decodeURIComponent(raw); } catch { alias = raw; }
+  const name = alias.trim().toLowerCase().replace(/\.(mp4|mkv|mov|webm)$/i, '');
+  const file = TEST_CAMERAS[name];
+  return file ? path.join(CLIP_DIR, file) : null;
+}
+
+// Any URL backed by a local video file, in either URL form.
+export function mediaClipPath(url) {
+  return isClip(url) ? clipPath(url) : testClipPath(url);
+}
+
+// Older loop cameras used clip:// URLs. Switch known files to friendly aliases.
+export function migrateTestCameraUrls(cameras) {
+  const byFile = new Map(Object.entries(TEST_CAMERAS)
+    .map(([alias, file]) => [file.toLowerCase(), alias]));
+  let changed = 0;
+  const next = cameras.map((cam) => {
+    if (!isClip(cam.url)) return cam;
+    const alias = byFile.get(cam.url.slice('clip://'.length).toLowerCase());
+    if (!alias) return cam;
+    changed += 1;
+    return { ...cam, url: `test://${alias}` };
+  });
+  return { cameras: next, changed };
 }
 const HOST_RE = /^[a-zA-Z0-9.-]{1,253}$/;
 
@@ -34,7 +77,7 @@ export function streamUrls(cam) {
     // Reolink uses these paths even when the stream is actually H.265.
     return { main: `${base}/h264Preview_01_main`, sub: `${base}/h264Preview_01_sub` };
   }
-  if (cam.url?.startsWith('test://') || isClip(cam.url)) {
+  if (isTest(cam.url) || isClip(cam.url)) {
     // Synthetic or recorded camera: behaves like a two-stream camera
     // (low-res in the grid, full quality in the full view).
     return { main: cam.url, sub: cam.url };
@@ -103,7 +146,12 @@ export function validateCamera(body, existing) {
 
   const url = unmask(str(body.url), existing?.url);
   if (!URL_SCHEMES.test(url)) throw new Error('Stream URL must start with rtsp://, rtsps://, http(s)://, clip:// or test://');
-  if (isClip(url)) {
+  if (isTest(url)) {
+    const file = testClipPath(url);
+    if (file && !fs.existsSync(file)) {
+      throw new Error(`No such test clip in data/clips: ${url.slice('test://'.length)}`);
+    }
+  } else if (isClip(url)) {
     const file = clipPath(url);
     if (!file) throw new Error('Clip name must be a plain video filename, e.g. clip://sample.mp4');
     if (!fs.existsSync(file)) throw new Error(`No such clip in data/clips: ${url.slice(7)}`);

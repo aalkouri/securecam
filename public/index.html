@@ -40,7 +40,7 @@
     <div class="empty hidden" id="empty">
       <h2>No cameras yet</h2>
       <p>Add your first camera. For Reolink cameras you only need the IP address and login.<br>
-        No hardware yet? Choose <em>Other</em> and use <code>test://demo</code> to see a sample feed.</p>
+        No hardware yet? Choose <em>Other</em> and pick one of the built-in test feeds.</p>
       <button class="primary" id="empty-add-btn">+ Add camera</button>
     </div>
     <div class="grid" id="grid"></div>
@@ -149,12 +149,24 @@
       </div>
 
       <div id="fields-generic" class="hidden">
+        <label for="cam-sample">Built-in test camera</label>
+        <select id="cam-sample">
+          <option value="">Choose a test feed…</option>
+          <option value="test://demo" data-name="Demo pattern">Demo pattern</option>
+          <option value="test://reolink-sample" data-name="Reolink sample">Reolink sample</option>
+          <option value="test://reolink-night-day" data-name="Reolink night/day">Reolink night/day</option>
+          <option value="test://drive-thru" data-name="Drive-thru">Drive-thru</option>
+          <option value="test://city-street" data-name="City street">City street</option>
+          <option value="test://night-crossing" data-name="Night crossing">Night crossing</option>
+        </select>
         <label for="cam-url">Stream URL</label>
         <input type="text" id="cam-url" placeholder="rtsp://user:pass@192.168.1.50:554/stream1">
         <label for="cam-suburl">Low-res stream URL (optional)</label>
         <input type="text" id="cam-suburl" placeholder="rtsp://user:pass@192.168.1.50:554/stream2">
         <div class="hint">If you add a low-res URL, the grid uses it and the full URL loads when you open the camera.
-          Use <code>test://demo</code> for a sample feed.</div>
+          The built-in feeds use <code>test://demo</code>, <code>test://reolink-sample</code>,
+          <code>test://reolink-night-day</code>, <code>test://drive-thru</code>,
+          <code>test://city-street</code> and <code>test://night-crossing</code>.</div>
       </div>
 
       <label class="check"><input type="checkbox" id="cam-enabled" checked> Enabled</label>

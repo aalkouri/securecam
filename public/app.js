@@ -340,6 +340,24 @@ field('cam-building').addEventListener('change', () => {
 });
 field('cam-room').addEventListener('change', updatePlacementFields);
 
+function chooseTestCamera() {
+  const option = field('cam-sample').selectedOptions[0];
+  if (!option?.value) return;
+  field('cam-type').value = 'generic';
+  showTypeFields();
+  field('cam-url').value = option.value;
+  if (!editingId && !field('cam-name').value.trim()) {
+    field('cam-name').value = option.dataset.name || option.textContent;
+  }
+  testResult.classList.add('hidden');
+}
+field('cam-sample').addEventListener('change', chooseTestCamera);
+field('cam-url').addEventListener('input', () => {
+  const value = field('cam-url').value.trim();
+  const match = [...field('cam-sample').options].find((option) => option.value === value);
+  field('cam-sample').value = match ? value : '';
+});
+
 async function openDialog(camera) {
   editingId = camera?.id || null;
   camError.textContent = '';
@@ -377,6 +395,9 @@ async function openDialog(camera) {
   field('cam-password').value = '';
   field('cam-password').placeholder = camera?.type === 'reolink' ? 'Leave blank to keep current' : '';
   field('cam-url').value = camera?.url || '';
+  const sampleUrl = camera?.url || '';
+  field('cam-sample').value = sampleUrl && [...field('cam-sample').options]
+    .some((option) => option.value === sampleUrl) ? sampleUrl : '';
   field('cam-suburl').value = camera?.subUrl || '';
   field('cam-enabled').checked = camera ? camera.enabled : true;
   showTypeFields();

@@ -10,7 +10,7 @@ import { registerAccountRoutes } from './accounts.js';
 import { adminId, closeUsers } from './users.js';
 import { assertCameraAllowed } from './guard.js';
 import { streams, STREAM_DIR, probe } from './streams.js';
-import { validateCamera, publicCamera, gridUrl, hdUrl } from './cameras.js';
+import { validateCamera, publicCamera, gridUrl, hdUrl, migrateTestCameraUrls } from './cameras.js';
 import { detection } from './detection.js';
 import { ALERT_CLIP_DIR, removeAlertClip } from './clips.js';
 import { startArchiveJob, listArchives, extractArchive, archiveClipPath } from './archives.js';
@@ -373,14 +373,20 @@ if (snapshotCleanup.deduped || snapshotCleanup.orphans) {
 }
 // Cameras saved before accounts existed belong to the admin. This has to
 // happen before placements are filled in, which are created per owner.
-{
-  const saved = getCameras();
-  const admin = adminId();
-  if (admin !== null && saved.some((c) => c.ownerId === undefined)) {
-    saveCameras(saved.map((c) => (c.ownerId === undefined ? { ...c, ownerId: admin } : c)));
-  }
+let cameras = getCameras();
+const admin = adminId();
+if (admin !== null && cameras.some((c) => c.ownerId === undefined)) {
+  cameras = cameras.map((c) => (c.ownerId === undefined ? { ...c, ownerId: admin } : c));
+  saveCameras(cameras);
 }
-const cameras = getCameras();
+// Older loop cameras used clip:// filenames. Give them the same short test://
+// URLs as the other sample feeds so they can be added again from the dialog.
+const urlMigration = migrateTestCameraUrls(cameras);
+if (urlMigration.changed) {
+  cameras = urlMigration.cameras;
+  saveCameras(cameras);
+  console.log(`Cameras: changed ${urlMigration.changed} loop URL(s) to test:// aliases`);
+}
 const placementMigration = ensureCameraPlacements(cameras);
 if (placementMigration.fabricated && placementMigration.added) {
   console.log(`Placement: created ${placementMigration.building.name} / Default Room for ${placementMigration.added} existing camera(s)`);

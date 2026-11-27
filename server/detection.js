@@ -3,7 +3,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { getCameras } from './store.js';
-import { gridUrl, isClip, clipPath } from './cameras.js';
+import { gridUrl, isTest, mediaClipPath } from './cameras.js';
 import { detect, loadModels, modelStatus } from './detector.js';
 import {
   MIN_SIGHTINGS, getSetting, setSetting, findMatch, findReviewCandidate,
@@ -21,14 +21,15 @@ function redact(text) {
 }
 
 function inputArgs(url) {
-  if (url.startsWith('test://')) {
+  const clipFile = mediaClipPath(url);
+  if (clipFile) {
+    // test:// aliases for the sample videos are backed by real clip files.
+    return ['-stream_loop', '-1', '-re', '-readrate_initial_burst', '2', '-i', clipFile];
+  }
+  if (isTest(url)) {
     return ['-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=15'];
   }
   const args = [];
-  if (isClip(url)) {
-    args.push('-stream_loop', '-1', '-re', '-readrate_initial_burst', '2', '-i', clipPath(url));
-    return args;
-  }
   if (url.startsWith('rtsp')) args.push('-rtsp_transport', 'tcp', '-timeout', '10000000');
   args.push('-i', url);
   return args;
