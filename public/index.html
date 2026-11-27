@@ -93,12 +93,61 @@
     </div>
   </div>
 
+  <!-- First-run guide for accounts that have no building yet. It stays open
+       until a building, room and first camera have been created. -->
+  <div id="onboarding" class="onboarding hidden" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+    <div class="onboarding-panel">
+      <div class="onboarding-hero">
+        <div class="onboarding-hero-icon" id="onboarding-hero-icon" aria-hidden="true">🏢</div>
+        <div>
+          <p class="eyebrow">Quick setup · <span id="onboarding-progress-text">Step 1 of 3</span></p>
+          <h2 id="onboarding-title">Let’s add your first building</h2>
+          <p id="onboarding-copy">A building is the property or site where your cameras will live. Name it something you’ll recognise later.</p>
+        </div>
+      </div>
+
+      <div class="onboarding-steps" aria-label="Setup progress">
+        <div class="onboard-step active" data-step="1"><span aria-hidden="true">🏢</span><span><strong>Building</strong><small>Where</small></span></div>
+        <div class="onboard-step" data-step="2"><span aria-hidden="true">🚪</span><span><strong>Room</strong><small>Which area</small></span></div>
+        <div class="onboard-step" data-step="3"><span aria-hidden="true">📷</span><span><strong>Camera</strong><small>Your first feed</small></span></div>
+      </div>
+
+      <div class="onboarding-body">
+        <section id="onboarding-step-1">
+          <label for="onboarding-building-name">Building name</label>
+          <input type="text" id="onboarding-building-name" placeholder="Home, Office Block, Warehouse…" maxlength="100">
+          <div class="tip"><span aria-hidden="true">💡</span><span>Think of the <strong>big picture</strong> first. You can add more buildings and rooms later.</span></div>
+        </section>
+
+        <section id="onboarding-step-2" class="hidden">
+          <div class="onboarding-summary" id="onboarding-building-summary"></div>
+          <label for="onboarding-room-name">Room name</label>
+          <input type="text" id="onboarding-room-name" placeholder="Front door, Driveway, Lobby…" maxlength="100">
+          <div class="tip"><span aria-hidden="true">💡</span><span>This room belongs to the building above. Every camera gets placed in a room so you always know where to look.</span></div>
+        </section>
+
+        <section id="onboarding-step-3" class="hidden">
+          <div class="onboarding-summary" id="onboarding-room-summary"></div>
+          <div class="tip"><span aria-hidden="true">💡</span><span>Choose <strong>Reolink</strong> for a real camera, or <strong>Other</strong> to try one of the built-in demo feeds. No camera handy? The demos work right away.</span></div>
+          <div id="onboarding-camera-slot"></div>
+        </section>
+
+        <div class="error" id="onboarding-error" role="alert"></div>
+        <div class="onboarding-actions" id="onboarding-actions">
+          <button type="button" class="primary" id="onboarding-next">Create building</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <dialog id="cam-dialog">
     <form method="dialog" id="cam-form">
       <h2 id="dialog-title">Add camera</h2>
 
       <label for="cam-name">Name</label>
       <input type="text" id="cam-name" placeholder="Front door" maxlength="64" required>
+
+      <div id="cam-placement-summary" class="onboarding-summary hidden"></div>
 
       <div class="row-2 placement-row">
         <div>
@@ -179,7 +228,7 @@
         <div class="right">
           <button type="button" id="cam-test">Test connection</button>
           <button type="button" id="cam-cancel">Cancel</button>
-          <button type="submit" class="primary">Save</button>
+          <button type="submit" class="primary" id="cam-submit">Save</button>
         </div>
       </div>
     </form>

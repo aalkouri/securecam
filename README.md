@@ -31,6 +31,10 @@ and the first **building**. Camera placement follows a **Building → Room**
 hierarchy. Existing installations are migrated automatically to a fabricated
 `Main Building / Default Room` so every camera has a valid placement.
 
+An account that starts without a building is guided through a three-step setup
+on first sign-in: **Building → Room → Camera**. The guide cannot be dismissed;
+by the camera step, the new building and room are already filled in.
+
 ## Adding cameras
 
 Click **+ Add camera**. Choose the **building**, then the **room** in that

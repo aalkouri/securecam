@@ -284,6 +284,190 @@ document.addEventListener('keydown', (e) => {
 // ---------- add / edit dialog ----------
 const field = (id) => document.getElementById(id);
 
+// ---------- first-run setup guide ----------
+// Accounts can be created without any building. Until one exists, the guide
+// owns the screen: create a building, then a room, then the first camera.
+const onboardingState = { active: false, step: 1, building: null, room: null };
+const onboardingEl = document.getElementById('onboarding');
+const onboardingError = document.getElementById('onboarding-error');
+const onboardingNext = document.getElementById('onboarding-next');
+const cameraSlot = document.getElementById('onboarding-camera-slot');
+
+const ONBOARDING_STEPS = {
+  1: {
+    icon: '🏢',
+    title: 'Let’s add your first building',
+    copy: 'A building is the property or site where your cameras will live. Name it something you’ll recognise later.',
+    button: 'Create building',
+  },
+  2: {
+    icon: '🚪',
+    title: 'Now add a room',
+    copy: 'Rooms keep cameras organised. Tell us which part of your building this first camera will watch.',
+    button: 'Create room',
+  },
+  3: {
+    icon: '📷',
+    title: 'Add your first camera',
+    copy: 'Last step. Your building and room are already filled in — just name the camera and choose its feed.',
+    button: 'Add camera',
+  },
+};
+
+function setBehindInert(inert) {
+  // Make every screen element outside the guide unreachable by mouse or
+  // keyboard. The overlay covers the page, but inert also hides background
+  // controls from focus order and assistive technology.
+  for (const el of document.body.children) {
+    if (el !== onboardingEl && el.tagName !== 'SCRIPT') el.inert = inert;
+  }
+}
+
+function placeSummary(building, room) {
+  return `<span>🏢 ${esc(building.name)}</span><span class="sep">›</span><span>🚪 ${esc(room.name)}</span>`;
+}
+
+function renderOnboarding() {
+  const step = onboardingState.step;
+  const info = ONBOARDING_STEPS[step];
+  field('onboarding-hero-icon').textContent = info.icon;
+  field('onboarding-progress-text').textContent = `Step ${step} of 3`;
+  field('onboarding-title').textContent = info.title;
+  field('onboarding-copy').textContent = info.copy;
+  onboardingNext.textContent = info.button;
+  onboardingError.textContent = '';
+
+  for (const el of document.querySelectorAll('.onboard-step')) {
+    const n = Number(el.dataset.step);
+    el.classList.toggle('active', n === step);
+    el.classList.toggle('done', n < step);
+  }
+  for (let n = 1; n <= 3; n += 1) {
+    field(`onboarding-step-${n}`).classList.toggle('hidden', n !== step);
+  }
+  field('onboarding-actions').classList.toggle('hidden', step === 3);
+}
+
+function startOnboarding() {
+  if (onboardingState.active || buildings.length) return;
+  onboardingState.active = true;
+  onboardingState.step = 1;
+  onboardingState.building = null;
+  onboardingState.room = null;
+  field('onboarding-building-name').value = '';
+  field('onboarding-room-name').value = '';
+  renderOnboarding();
+  onboardingEl.classList.remove('hidden');
+  document.body.classList.add('no-scroll');
+  setBehindInert(true);
+  field('onboarding-building-name').focus();
+}
+
+// The camera form normally lives inside #cam-dialog. During setup it moves
+// into the guide so the whole flow looks and behaves like one screen.
+function restoreCameraForm() {
+  if (cameraSlot.contains(camForm)) dialog.appendChild(camForm);
+  field('cam-placement-summary').classList.add('hidden');
+  field('cam-placement-summary').textContent = '';
+  field('cam-building').closest('.placement-row').classList.remove('hidden');
+  field('cam-cancel').classList.remove('hidden');
+  field('cam-delete').classList.remove('hidden');
+  field('dialog-title').classList.remove('hidden');
+  field('cam-submit').textContent = 'Save';
+}
+
+async function prepareCameraStep() {
+  await loadPlacements();
+  restoreCameraForm();
+  cameraSlot.appendChild(camForm);
+  editingId = null;
+  camError.textContent = '';
+  testResult.classList.add('hidden');
+  field('cam-placement-summary').innerHTML = placeSummary(onboardingState.building, onboardingState.room);
+  field('cam-placement-summary').classList.remove('hidden');
+  field('cam-building').closest('.placement-row').classList.add('hidden');
+  field('cam-cancel').classList.add('hidden');
+  field('cam-delete').classList.add('hidden');
+  field('dialog-title').classList.add('hidden');
+  field('cam-submit').textContent = 'Add camera';
+  field('onboarding-room-summary').innerHTML = placeSummary(onboardingState.building, onboardingState.room);
+
+  field('cam-building').value = onboardingState.building.id;
+  setRoomOptions(onboardingState.building.id, onboardingState.room.id);
+  field('cam-name').value = '';
+  field('cam-type').value = 'reolink';
+  field('cam-host').value = '';
+  field('cam-port').value = '';
+  field('cam-username').value = 'admin';
+  field('cam-password').value = '';
+  field('cam-password').placeholder = '';
+  field('cam-url').value = '';
+  field('cam-sample').value = '';
+  field('cam-enabled').checked = true;
+  showTypeFields();
+}
+
+function finishOnboarding() {
+  restoreCameraForm();
+  onboardingState.active = false;
+  onboardingState.building = null;
+  onboardingState.room = null;
+  onboardingEl.classList.add('hidden');
+  document.body.classList.remove('no-scroll');
+  setBehindInert(false);
+}
+
+async function advanceOnboarding() {
+  if (!onboardingState.active || onboardingState.step === 3) return;
+  onboardingError.textContent = '';
+  onboardingNext.disabled = true;
+  try {
+    if (onboardingState.step === 1) {
+      const name = field('onboarding-building-name').value.trim();
+      if (!name) throw new Error('Enter a building name to continue.');
+      const building = await api('/api/buildings', { method: 'POST', body: JSON.stringify({ name }) });
+      onboardingState.building = building;
+      field('onboarding-building-summary').innerHTML = `<span>🏢 ${esc(building.name)}</span>`;
+      onboardingState.step = 2;
+      field('onboarding-room-name').value = '';
+      renderOnboarding();
+      field('onboarding-room-name').focus();
+    } else {
+      const name = field('onboarding-room-name').value.trim();
+      if (!name) throw new Error('Enter a room name to continue.');
+      const room = await api(`/api/buildings/${onboardingState.building.id}/rooms`, {
+        method: 'POST', body: JSON.stringify({ name }),
+      });
+      onboardingState.room = room;
+      onboardingState.step = 3;
+      await prepareCameraStep();
+      renderOnboarding();
+      field('cam-name').focus();
+    }
+  } catch (err) {
+    onboardingError.textContent = err.message;
+    onboardingNext.disabled = false;
+    return;
+  }
+  onboardingNext.disabled = false;
+}
+
+onboardingNext.addEventListener('click', () => { advanceOnboarding(); });
+for (const id of ['onboarding-building-name', 'onboarding-room-name']) {
+  field(id).addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    advanceOnboarding();
+  });
+}
+// Escape must never dismiss the guide or let someone slip past it.
+document.addEventListener('keydown', (e) => {
+  if (onboardingState.active && e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}, true);
+
 function showTypeFields() {
   const type = field('cam-type').value;
   field('fields-reolink').classList.toggle('hidden', type !== 'reolink');
@@ -481,7 +665,8 @@ camForm.addEventListener('submit', async (e) => {
       await api('/api/cameras', { method: 'POST', body: JSON.stringify(formPayload()) });
     }
     try { await loadPlacements(); } catch { /* the next dialog will retry */ }
-    dialog.close();
+    if (onboardingState.active) finishOnboarding();
+    else dialog.close();
     refresh();
   } catch (err) {
     camError.textContent = err.message;
@@ -736,6 +921,8 @@ async function pollAlerts() {
 pollAlerts();
 setInterval(pollAlerts, 5000);
 
-loadPlacements().catch(() => { /* openDialog retries when needed */ });
+loadPlacements()
+  .then(() => { startOnboarding(); })
+  .catch(() => { /* openDialog retries when needed */ });
 refresh();
 setInterval(refresh, 3000);
