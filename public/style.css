@@ -170,12 +170,18 @@ body.admin-picking #alerts { display: none !important; }
 }
 .floorplan-building-name:hover { background: #eff6ff; border-color: #2563eb; color: #1d4ed8; }
 .floorplan-building-resize {
-  position: absolute; right: -14px; bottom: -14px; z-index: 5;
-  width: 28px; height: 28px;
-  background: url('/resize-handle.png') center / contain no-repeat;
+  position: absolute; right: -12px; bottom: -12px; z-index: 5;
+  display: grid; place-items: center; width: 24px; height: 24px; padding: 2px;
+  border: 1px solid var(--plan-ink); border-radius: 4px;
+  background: rgba(255, 255, 255, .96); color: var(--plan-ink);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .2);
   cursor: nwse-resize; touch-action: none; outline-offset: 2px;
 }
-.floorplan-building-resize:hover { filter: brightness(.85); }
+.floorplan-building-resize:hover { background: #eff6ff; border-color: #2563eb; color: #1d4ed8; }
+.resize-icon {
+  width: 14px; height: 14px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
 .floorplan-rooms { position: absolute; inset: 0; }
 .floorplan-empty {
   position: absolute; inset: 0; display: grid; place-items: center;
@@ -218,11 +224,14 @@ body.admin-picking #alerts { display: none !important; }
 }
 .plan-add-cam:hover { background: #eff6ff; border-color: #2563eb; color: #1d4ed8; }
 .plan-resize {
-  position: absolute; right: 0; bottom: 0; width: 22px; height: 22px;
-  background: url('/resize-handle.png') center / contain no-repeat;
+  position: absolute; right: 6px; bottom: 6px;
+  display: grid; place-items: center; width: 24px; height: 24px; padding: 2px;
+  border: 1px solid var(--plan-ink); border-radius: 4px;
+  background: rgba(255, 255, 255, .96); color: var(--plan-ink);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .18);
   cursor: nwse-resize; touch-action: none; outline-offset: 2px;
 }
-.plan-resize:hover { filter: brightness(.9); }
+.plan-resize:hover { background: #eff6ff; border-color: #2563eb; color: #1d4ed8; }
 .plan-camera {
   position: absolute;
   left: calc(var(--cx, 50) * 1%); top: calc(var(--cy, 50) * 1%);
@@ -269,6 +278,7 @@ body.admin-picking #alerts { display: none !important; }
   .plan-add-cam { font-size: 11px; padding: 3px 6px; }
   .plan-room-close { width: 18px; height: 18px; font-size: 11px; }
   .plan-resize { width: 20px; height: 20px; }
+  .resize-icon { width: 12px; height: 12px; }
   .plan-camera { width: 68px; }
   .plan-camera-icon { width: 30px; height: 30px; }
   .plan-camera-icon img { width: 22px; height: 22px; }
