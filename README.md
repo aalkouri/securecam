@@ -26,11 +26,18 @@ versions hold native packages' install scripts back by default.)
 To restart a running server (or start it in the background), run
 `npm run restart`. It logs to `data/server.log`.
 
-Open http://localhost:8080. The first visit asks you to create the admin account.
+Open http://localhost:8080. The first visit asks you to create the admin account
+and the first **building**. Camera placement follows a **Building → Room**
+hierarchy. Existing installations are migrated automatically to a fabricated
+`Main Building / Default Room` so every camera has a valid placement.
 
 ## Adding cameras
 
-Click **+ Add camera**.
+Click **+ Add camera**. Choose the **building**, then the **room** in that
+building; both are required. If you do not have one yet, select
+*+ Create new building…* or *+ Create new room…* and type the name inline. The
+building and room are stored in SQLite, and the room belongs to its building.
+Each camera tile shows its building and room.
 
 - **Reolink:** choose *Reolink* and enter the camera's IP address, username
   (usually `admin`) and password. Turn on RTSP first in the Reolink app:

@@ -65,6 +65,34 @@ db.exec(`
     value TEXT NOT NULL
   );
 
+  -- Camera placement hierarchy. Rooms can only belong to one building, and a
+  -- camera placement can only reference a room of its own building.
+  -- A building belongs to one account; names only have to be unique within it.
+  CREATE TABLE IF NOT EXISTS buildings (
+    id         TEXT PRIMARY KEY,
+    owner_id   INTEGER NOT NULL DEFAULT 1,
+    name       TEXT NOT NULL COLLATE NOCASE,
+    created_at TEXT NOT NULL,
+    UNIQUE (owner_id, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS rooms (
+    id          TEXT PRIMARY KEY,
+    building_id TEXT NOT NULL REFERENCES buildings(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (building_id, name COLLATE NOCASE),
+    UNIQUE (building_id, id)
+  );
+
+  CREATE TABLE IF NOT EXISTS camera_placements (
+    camera_id   TEXT PRIMARY KEY,
+    building_id TEXT NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
+    room_id     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY (building_id, room_id) REFERENCES rooms(building_id, id) ON DELETE RESTRICT
+  );
+
   -- One ZIP per local day. Clip metadata is copied here so an archive remains
   -- browsable after its alert row has passed the seven-day retention window.
   CREATE TABLE IF NOT EXISTS alert_archives (
@@ -93,6 +121,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS sightings_object ON sightings(object_id, seen_at DESC);
   CREATE INDEX IF NOT EXISTS alerts_created_at ON alerts(created_at DESC);
   CREATE INDEX IF NOT EXISTS objects_kind ON objects(kind);
+  CREATE INDEX IF NOT EXISTS rooms_building ON rooms(building_id);
+  CREATE INDEX IF NOT EXISTS camera_placements_room ON camera_placements(building_id, room_id);
   CREATE INDEX IF NOT EXISTS archive_clips_name ON alert_archive_clips(clip_name);
   CREATE INDEX IF NOT EXISTS archive_clips_alert ON alert_archive_clips(alert_id);
 `);
@@ -112,6 +142,30 @@ ensureColumn('alerts', 'last_seen_at', 'TEXT');
 // Which account an object belongs to. Sightings and alerts belong to their
 // object's owner. Everything from before accounts belongs to the admin (id 1).
 ensureColumn('objects', 'owner_id', 'INTEGER NOT NULL DEFAULT 1');
+
+// Buildings were first created with names unique across the whole server.
+// SQLite cannot drop that constraint in place, so rebuild the table once:
+// existing buildings go to the admin (id 1) and keep their ids, so rooms and
+// camera placements still point at them.
+if (!db.prepare('PRAGMA table_info(buildings)').all().some((col) => col.name === 'owner_id')) {
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN;
+    CREATE TABLE buildings_new (
+      id         TEXT PRIMARY KEY,
+      owner_id   INTEGER NOT NULL DEFAULT 1,
+      name       TEXT NOT NULL COLLATE NOCASE,
+      created_at TEXT NOT NULL,
+      UNIQUE (owner_id, name)
+    );
+    INSERT INTO buildings_new (id, owner_id, name, created_at)
+      SELECT id, 1, name, created_at FROM buildings;
+    DROP TABLE buildings;
+    ALTER TABLE buildings_new RENAME TO buildings;
+    COMMIT;
+    PRAGMA foreign_keys = ON;
+  `);
+}
 db.exec('UPDATE alerts SET last_seen_at = created_at WHERE last_seen_at IS NULL');
 
 const PREFIX = { car: 'CAR', truck: 'TRK', bus: 'BUS', person: 'PER', bicycle: 'BIK', motorcycle: 'MOT', cat: 'CAT', dog: 'DOG' };
@@ -138,6 +192,148 @@ export function getSetting(key, fallback) {
 export function setSetting(key, value) {
   db.prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     .run(key, JSON.stringify(value));
+}
+
+// ----- building / room placement -----
+
+function placementName(value, label, required = true) {
+  const name = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+  if (!name) {
+    if (required) throw new Error(`${label} name is required`);
+    return '';
+  }
+  if (name.length > 100) throw new Error(`${label} name must be 100 characters or fewer`);
+  return name;
+}
+
+function ownsBuilding(buildingId, ownerId) {
+  return Boolean(db.prepare('SELECT 1 FROM buildings WHERE id = ? AND owner_id = ?').get(buildingId, ownerId));
+}
+
+export function listBuildings(ownerId) {
+  const buildings = db.prepare('SELECT id, name, created_at AS createdAt FROM buildings WHERE owner_id = ? ORDER BY name COLLATE NOCASE').all(ownerId);
+  const rooms = db.prepare(`SELECT id, building_id AS buildingId, name, created_at AS createdAt
+    FROM rooms WHERE building_id IN (SELECT id FROM buildings WHERE owner_id = ?)
+    ORDER BY name COLLATE NOCASE`).all(ownerId);
+  return buildings.map((building) => ({
+    id: building.id,
+    name: building.name,
+    createdAt: building.createdAt,
+    rooms: rooms.filter((room) => room.buildingId === building.id)
+      .map(({ buildingId, ...room }) => room),
+  }));
+}
+
+export function createBuilding(value, ownerId) {
+  const name = placementName(value, 'Building');
+  if (db.prepare('SELECT 1 FROM buildings WHERE owner_id = ? AND name COLLATE NOCASE = ?').get(ownerId, name)) {
+    throw new Error('A building with that name already exists');
+  }
+  const building = { id: crypto.randomUUID(), name };
+  db.prepare('INSERT INTO buildings (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)')
+    .run(building.id, ownerId, building.name, new Date().toISOString());
+  return { ...building, rooms: [] };
+}
+
+export function createRoom(buildingId, value, ownerId) {
+  if (!ownsBuilding(buildingId, ownerId)) throw new Error('Building not found');
+  const name = placementName(value, 'Room');
+  if (db.prepare(`SELECT 1 FROM rooms WHERE building_id = ? AND name COLLATE NOCASE = ?`)
+    .get(buildingId, name)) {
+    throw new Error('A room with that name already exists in this building');
+  }
+  const room = { id: crypto.randomUUID(), buildingId, name };
+  db.prepare('INSERT INTO rooms (id, building_id, name, created_at) VALUES (?, ?, ?, ?)')
+    .run(room.id, room.buildingId, room.name, new Date().toISOString());
+  return room;
+}
+
+// Resolve the camera form's placement. Inline "new building" and "new room"
+// names are created here; otherwise an existing room must match its building.
+export function resolveCameraPlacement(body = {}, existing = null, ownerId) {
+  const newBuilding = placementName(body.newBuilding, 'Building', false);
+  const newRoom = placementName(body.newRoom, 'Room', false);
+  let buildingId = typeof body.buildingId === 'string' ? body.buildingId.trim() : '';
+  let roomId = typeof body.roomId === 'string' ? body.roomId.trim() : '';
+
+  if (newBuilding) {
+    if (!newRoom) throw new Error('Enter a room name for the new building');
+    const building = createBuilding(newBuilding, ownerId);
+    buildingId = building.id;
+    const room = createRoom(building.id, newRoom, ownerId);
+    return { buildingId, roomId: room.id };
+  }
+
+  if (!buildingId) {
+    if (existing?.buildingId && existing?.roomId) return existing;
+    throw new Error('Building is required');
+  }
+  if (!ownsBuilding(buildingId, ownerId)) throw new Error('Building not found');
+
+  if (newRoom) {
+    const room = createRoom(buildingId, newRoom, ownerId);
+    return { buildingId, roomId: room.id };
+  }
+
+  if (!roomId) {
+    if (existing?.buildingId === buildingId && existing?.roomId) return existing;
+    throw new Error('Room is required');
+  }
+  if (!db.prepare('SELECT 1 FROM rooms WHERE id = ? AND building_id = ?').get(roomId, buildingId)) {
+    throw new Error('Room does not belong to this building');
+  }
+  return { buildingId, roomId };
+}
+
+export function setCameraPlacement(cameraId, placement) {
+  db.prepare(`INSERT INTO camera_placements (camera_id, building_id, room_id, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(camera_id) DO UPDATE SET building_id = excluded.building_id,
+      room_id = excluded.room_id`)
+    .run(cameraId, placement.buildingId, placement.roomId, new Date().toISOString());
+}
+
+export function deleteCameraPlacement(cameraId) {
+  db.prepare('DELETE FROM camera_placements WHERE camera_id = ?').run(cameraId);
+}
+
+export function getCameraPlacements() {
+  const rows = db.prepare(`SELECT p.camera_id AS cameraId, p.building_id AS buildingId,
+      p.room_id AS roomId, b.name AS buildingName, r.name AS roomName
+    FROM camera_placements p
+    JOIN buildings b ON b.id = p.building_id
+    JOIN rooms r ON r.id = p.room_id AND r.building_id = p.building_id`).all();
+  return new Map(rows.map((row) => [row.cameraId, row]));
+}
+
+// Old installs had no placement data. Give their cameras one fabricated
+// building/room so every camera satisfies the new required hierarchy.
+// Takes the saved cameras ({ id, ownerId }); each camera is placed in a
+// building of its own account, never in someone else's.
+export function ensureCameraPlacements(cameras = []) {
+  const placed = new Set(db.prepare('SELECT camera_id FROM camera_placements').all().map((row) => row.camera_id));
+  const missing = cameras.filter((cam) => typeof cam?.id === 'string' && cam.id && !placed.has(cam.id));
+  const result = { fabricated: false, added: 0, building: null };
+  if (!missing.length) return result;
+
+  const insert = db.prepare(`INSERT OR IGNORE INTO camera_placements
+    (camera_id, building_id, room_id, created_at) VALUES (?, ?, ?, ?)`);
+  const now = new Date().toISOString();
+  for (const ownerId of new Set(missing.map((cam) => cam.ownerId ?? 1))) {
+    let building = listBuildings(ownerId)[0];
+    if (!building) {
+      building = createBuilding('Main Building', ownerId);
+      result.fabricated = true;
+    }
+    let rooms = db.prepare('SELECT id FROM rooms WHERE building_id = ? ORDER BY created_at, name COLLATE NOCASE')
+      .all(building.id);
+    if (!rooms.length) rooms = [{ id: createRoom(building.id, 'Default Room', ownerId).id }];
+    for (const cam of missing.filter((c) => (c.ownerId ?? 1) === ownerId)) {
+      result.added += insert.run(cam.id, building.id, rooms[0].id, now).changes;
+    }
+    result.building = result.building || { id: building.id, name: building.name };
+  }
+  return result;
 }
 
 function objectRow(row) {

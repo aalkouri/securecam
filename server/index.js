@@ -18,6 +18,9 @@ import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
   listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots,
   consolidateAlerts, pruneOldAlerts, closeDatabase, ownsSnapshot,
+  listBuildings, createBuilding, createRoom, resolveCameraPlacement,
+  setCameraPlacement, deleteCameraPlacement, getCameraPlacements,
+  ensureCameraPlacements,
 } from './database.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -83,8 +86,36 @@ app.use(express.static(publicDir));
 
 app.get('/api/me', (req, res) => res.json({ user: req.user.name, role: req.user.role }));
 
-function viewCamera(cam) {
-  return publicCamera(cam, { status: streams.status(cam.id, 'grid') });
+// ----- building / room placement -----
+// Buildings and rooms belong to the account that created them.
+app.get('/api/placements', (req, res) => res.json({ buildings: listBuildings(req.user.id) }));
+
+app.post('/api/buildings', (req, res) => {
+  try {
+    res.status(201).json(createBuilding(req.body?.name, req.user.id));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/buildings/:id/rooms', (req, res) => {
+  try {
+    res.status(201).json(createRoom(req.params.id, req.body?.name, req.user.id));
+  } catch (err) {
+    res.status(err.message === 'Building not found' ? 404 : 400).json({ error: err.message });
+  }
+});
+
+function viewCamera(cam, placements) {
+  const map = placements || getCameraPlacements();
+  const place = map.get(cam.id) || {};
+  return publicCamera(cam, {
+    status: streams.status(cam.id, 'grid'),
+    buildingId: place.buildingId || null,
+    buildingName: place.buildingName || null,
+    roomId: place.roomId || null,
+    roomName: place.roomName || null,
+  });
 }
 
 // Every account only ever sees and changes its own cameras.
@@ -96,7 +127,10 @@ function findCamera(id, req) {
   return ownCameras(req).find((c) => c.id === id);
 }
 
-app.get('/api/cameras', (req, res) => res.json(ownCameras(req).map(viewCamera)));
+app.get('/api/cameras', (req, res) => {
+  const placements = getCameraPlacements();
+  res.json(ownCameras(req).map((cam) => viewCamera(cam, placements)));
+});
 
 // Check a camera's settings before saving: connects and reports what it sends.
 app.post('/api/cameras/test', async (req, res) => {
@@ -115,11 +149,14 @@ app.post('/api/cameras/test', async (req, res) => {
 
 app.post('/api/cameras', async (req, res) => {
   try {
-    const cam = { id: crypto.randomUUID(), ownerId: req.user.id, ...validateCamera(req.body || {}) };
-    await assertCameraAllowed(cam, req.user, ownCameras(req).length + 1);
+    const validated = validateCamera(req.body || {});
+    await assertCameraAllowed({ ...validated }, req.user, ownCameras(req).length + 1);
+    const placement = resolveCameraPlacement(req.body || {}, null, req.user.id);
+    const cam = { id: crypto.randomUUID(), ownerId: req.user.id, ...validated, ...placement };
     const cameras = getCameras();
     cameras.push(cam);
     saveCameras(cameras);
+    setCameraPlacement(cam.id, placement);
     if (cam.enabled) streams.startCamera(cam);
     res.status(201).json(viewCamera(cam));
   } catch (err) {
@@ -131,14 +168,17 @@ app.put('/api/cameras/:id', async (req, res) => {
   if (!findCamera(req.params.id, req)) return res.status(404).json({ error: 'Camera not found' });
   try {
     const before = findCamera(req.params.id, req);
-    const cam = { id: before.id, ownerId: before.ownerId, ...validateCamera(req.body || {}, before) };
-    await assertCameraAllowed(cam, req.user, 0);
+    const validated = validateCamera(req.body || {}, before);
+    await assertCameraAllowed({ ...validated }, req.user, 0);
+    const placement = resolveCameraPlacement(req.body || {}, getCameraPlacements().get(before.id), req.user.id);
+    const cam = { id: before.id, ownerId: before.ownerId, ...validated, ...placement };
     // Re-read after the await: another request may have saved in between.
     const cameras = getCameras();
     const idx = cameras.findIndex((c) => c.id === cam.id);
     if (idx === -1) return res.status(404).json({ error: 'Camera not found' });
     cameras[idx] = cam;
     saveCameras(cameras);
+    setCameraPlacement(cam.id, placement);
     if (cam.enabled) streams.startCamera(cam); else streams.stopCamera(cam.id);
     res.json(viewCamera(cam));
   } catch (err) {
@@ -151,6 +191,7 @@ app.delete('/api/cameras/:id', (req, res) => {
   const next = getCameras().filter((c) => c.id !== req.params.id);
   streams.stopCamera(req.params.id);
   saveCameras(next);
+  deleteCameraPlacement(req.params.id);
   res.json({ ok: true });
 });
 
@@ -330,18 +371,24 @@ const snapshotCleanup = cleanupSnapshots();
 if (snapshotCleanup.deduped || snapshotCleanup.orphans) {
   console.log(`Snapshots: removed ${snapshotCleanup.deduped} duplicates and ${snapshotCleanup.orphans} unused files`);
 }
+// Cameras saved before accounts existed belong to the admin. This has to
+// happen before placements are filled in, which are created per owner.
+{
+  const saved = getCameras();
+  const admin = adminId();
+  if (admin !== null && saved.some((c) => c.ownerId === undefined)) {
+    saveCameras(saved.map((c) => (c.ownerId === undefined ? { ...c, ownerId: admin } : c)));
+  }
+}
+const cameras = getCameras();
+const placementMigration = ensureCameraPlacements(cameras);
+if (placementMigration.fabricated && placementMigration.added) {
+  console.log(`Placement: created ${placementMigration.building.name} / Default Room for ${placementMigration.added} existing camera(s)`);
+}
 cleanupAlerts();
 setInterval(cleanupAlerts, 60 * 60 * 1000).unref();
 startArchiveJob();
-// Cameras saved before accounts existed belong to the admin.
-{
-  const cameras = getCameras();
-  const admin = adminId();
-  if (admin !== null && cameras.some((c) => c.ownerId === undefined)) {
-    saveCameras(cameras.map((c) => (c.ownerId === undefined ? { ...c, ownerId: admin } : c)));
-  }
-}
-for (const cam of getCameras()) if (cam.enabled) streams.startCamera(cam);
+for (const cam of cameras) if (cam.enabled) streams.startCamera(cam);
 detection.start();
 
 const server = app.listen(PORT, HOST, () => {

@@ -12,6 +12,7 @@ import {
 } from './users.js';
 import { config, googleEnabled, mailEnabled, baseUrl } from './config.js';
 import { sendLinkEmail } from './mail.js';
+import { createBuilding } from './database.js';
 
 export const MIN_PASSWORD = 7;
 const VERIFY_TTL = 24 * 60 * 60 * 1000;
@@ -65,13 +66,21 @@ export function registerAccountRoutes(app, publicDir) {
   app.post('/api/setup', (req, res) => {
     if (isSetupComplete()) return res.status(409).json({ error: 'Setup already completed' });
     const { username, password } = req.body || {};
+    const building = typeof req.body?.building === 'string' ? req.body.building.trim() : '';
     if (!username || typeof username !== 'string' || username.length > 64) {
       return res.status(400).json({ error: 'Username is required' });
     }
     if (!validPassword(password)) {
       return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters` });
     }
-    signIn(req, createAdmin(username.trim(), password), () => res.json({ ok: true }));
+    // Checked before the account exists, so a bad name cannot leave a
+    // half-finished setup behind.
+    if (!building || building.length > 100) {
+      return res.status(400).json({ error: 'Building name is required (100 characters or fewer)' });
+    }
+    const admin = createAdmin(username.trim(), password);
+    const createdBuilding = createBuilding(building, admin.id);
+    signIn(req, admin, () => res.json({ ok: true, building: createdBuilding }));
   });
 
   app.post('/api/login', (req, res) => {

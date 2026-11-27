@@ -55,6 +55,7 @@ form.addEventListener('submit', async (e) => {
     username: value('username')?.trim(),
     email: value('email')?.trim(),
     password: value('password'),
+    building: value('building')?.trim(),
     // The reset link carries its one-time code after the "#", which browsers
     // never send to servers or leave in their logs.
     token: mode === 'reset' ? location.hash.slice(1) : undefined,

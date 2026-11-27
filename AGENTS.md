@@ -51,7 +51,9 @@ query:
 - `objects.owner_id` scopes detection data; sightings and alerts belong to
   their object's owner. Every database read used by a route takes an owner id
   (`listObjects`, `listSightings`, `listAlerts`, `getObject`, `getAlert`,
-  `ackAlerts`, `counts`, `ownsSnapshot`), and re-identification only matches
+  `ackAlerts`, `counts`, `ownsSnapshot`), buildings and rooms have
+  `buildings.owner_id` (`listBuildings`, `createBuilding`, `createRoom`,
+  `resolveCameraPlacement` all take the owner), and re-identification only matches
   within one owner (`findMatch(ownerId, ...)`). **Any new table or query that a
   route exposes must be scoped the same way**, or one user sees another's home.
 - Sign-up by email needs the address confirmed through a mailed link; Google

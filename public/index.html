@@ -100,6 +100,23 @@
       <label for="cam-name">Name</label>
       <input type="text" id="cam-name" placeholder="Front door" maxlength="64" required>
 
+      <div class="row-2 placement-row">
+        <div>
+          <label for="cam-building">Building</label>
+          <select id="cam-building" required>
+            <option value="__new__">+ Create new building…</option>
+          </select>
+          <input type="text" id="cam-new-building" class="hidden" placeholder="New building name" maxlength="100">
+        </div>
+        <div>
+          <label for="cam-room">Room</label>
+          <select id="cam-room" required>
+            <option value="">Choose a room…</option>
+          </select>
+          <input type="text" id="cam-new-room" class="hidden" placeholder="New room name" maxlength="100">
+        </div>
+      </div>
+
       <label for="cam-type">Camera type</label>
       <select id="cam-type">
         <option value="reolink">Reolink</option>
@@ -162,7 +179,10 @@
         <div class="overlay"></div>
       </div>
       <div class="bar">
-        <span class="name"></span>
+        <div class="labels">
+          <span class="name"></span>
+          <span class="location"></span>
+        </div>
         <div class="tools">
           <span class="badge"></span>
           <button class="icon" data-action="open" title="Open full view">⛶</button>
