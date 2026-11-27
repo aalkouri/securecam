@@ -90,11 +90,18 @@ A 1-minute flicker guard stops brief detection dropouts from counting as
 re-arrivals. Both delays, the scan interval, and the on/off switch can be
 changed from the Detections page.
 
+Alerts are grouped too: a returning object updates one rolling alert with a
+sighting count and a fresh clip instead of adding a row every time. Existing
+duplicate alerts are folded together on startup, and alerts and clips older
+than **7 days** are removed hourly. The Alerts dropdown shows when an object was
+last seen and how many sightings the group contains.
+
 Each enabled camera is always recording a rolling **10-minute low-res buffer**.
-When an alert happens, SecureCam saves a **five-second clip from that camera's
-full-quality stream** and links it to the alert. The buffer uses roughly 0.5–1
-Mbps per camera; with 2–4 cameras the ten-minute window stays well under 1 GB.
-The 4K alert clips are typically 2–15 MB each depending on the camera bitrate.
+When an alert happens, SecureCam saves a **five-second 1080p clip from that
+camera's full-quality stream** and links it to the alert. The buffer uses
+roughly 0.5–1 Mbps per camera; with 2–4 cameras the ten-minute window stays well
+under 1 GB. A 1080p alert clip is typically **1–2 MB** instead of 12 MB at 4K;
+the newest clip replaces the old one when an alert group grows.
 
 On first run the app downloads four small models (~36 MB total) into
 `data/models/` and verifies their checksums. Snapshots and the SQLite database

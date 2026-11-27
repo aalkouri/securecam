@@ -1,18 +1,22 @@
 // Save a short, browser-playable MP4 for each alert. The always-on grid stream
 // is a rolling low-res buffer; a full-quality variant is started on demand when
-// an alert happens so the saved clip is from the camera's main feed.
+// an alert happens. Clips are capped at 1080p so five seconds costs about
+// 1–2 MB instead of 12 MB at full 4K.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './store.js';
 import { STREAM_DIR, streams } from './streams.js';
-import { gridUrl, isClip, clipPath } from './cameras.js';
+import { gridUrl, hdUrl, isClip, clipPath } from './cameras.js';
 
 export const ALERT_CLIP_DIR = path.join(DATA_DIR, 'alert-clips');
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
-const X264 = ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-g', '30', '-pix_fmt', 'yuv420p'];
+const CLIP_VIDEO = [
+  '-vf', "scale='min(1920,iw)':-2", '-r', '30', '-an',
+  '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+];
 const CLIP_SECONDS = 5;
-const CLIP_TIMEOUT_MS = 35_000;
+const CLIP_TIMEOUT_MS = 45_000;
 
 function inputArgs(url) {
   if (url.startsWith('test://')) {
@@ -33,6 +37,7 @@ function runFfmpeg(args, temp) {
     const proc = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
     let stderr = '';
     let done = false;
+    let timedOut = false;
     const finish = (err) => {
       if (done) return;
       done = true;
@@ -40,12 +45,14 @@ function runFfmpeg(args, temp) {
       if (err) reject(err); else resolve();
     };
     const timer = setTimeout(() => {
-      proc.kill('SIGKILL');
-      finish(new Error('Clip recording timed out'));
+      timedOut = true;
+      try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+      // Wait for `close`: on Windows the temp file stays locked until ffmpeg exits.
     }, CLIP_TIMEOUT_MS);
     proc.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-2000); });
     proc.on('error', (err) => finish(new Error(`Failed to launch ffmpeg: ${err.message}`)));
     proc.on('close', (code) => {
+      if (timedOut) return finish(new Error('Clip recording timed out'));
       if (code === 0 && fs.existsSync(temp) && fs.statSync(temp).size > 0) return finish(null);
       finish(new Error(stderr.trim().split('\n').pop() || `ffmpeg exited with code ${code}`));
     });
@@ -71,19 +78,25 @@ async function recordHls(playlist, temp, startIndex) {
     '-live_start_index', String(startIndex),
     '-i', playlist,
     '-t', String(CLIP_SECONDS),
-    '-map', '0:v:0', '-an', '-c:v', 'copy', '-movflags', '+faststart',
+    '-map', '0:v:0', ...CLIP_VIDEO, '-movflags', '+faststart',
     temp,
   ], temp);
 }
 
 async function recordDirect(camera, temp) {
+  const url = hdUrl(camera) || gridUrl(camera);
   await runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y',
-    ...inputArgs(gridUrl(camera)),
+    ...inputArgs(url),
     '-t', String(CLIP_SECONDS),
-    '-vf', 'scale=640:-2', '-r', '15', '-an', ...X264,
+    ...CLIP_VIDEO,
     '-movflags', '+faststart', temp,
   ], temp);
+}
+
+export function removeAlertClip(name) {
+  if (!/^\d+(-\d+)?\.mp4$/i.test(name)) return;
+  try { fs.unlinkSync(path.join(ALERT_CLIP_DIR, name)); } catch { /* already gone */ }
 }
 
 // Full quality when there is a separate main stream; otherwise the grid feed.
@@ -111,7 +124,7 @@ export async function recordAlertClip(camera, output) {
     try {
       await recordHls(source.playlist, temp, source.startIndex);
     } catch (hlsErr) {
-      console.warn(`4K clip remux failed, retrying direct capture: ${hlsErr.message}`);
+      console.warn(`HD clip remux failed, retrying direct capture: ${hlsErr.message}`);
       fs.rmSync(temp, { force: true });
       await recordDirect(camera, temp);
     }

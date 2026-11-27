@@ -12,10 +12,11 @@ import {
 import { streams, STREAM_DIR, probe } from './streams.js';
 import { validateCamera, publicCamera, gridUrl, hdUrl } from './cameras.js';
 import { detection } from './detection.js';
-import { ALERT_CLIP_DIR } from './clips.js';
+import { ALERT_CLIP_DIR, removeAlertClip } from './clips.js';
 import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
-  listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots, closeDatabase,
+  listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots,
+  consolidateAlerts, pruneOldAlerts, closeDatabase,
 } from './database.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -246,7 +247,7 @@ app.delete('/api/objects/:id', (req, res) => {
       try { fs.unlinkSync(path.join(SNAPSHOT_DIR, name)); } catch { /* already gone */ }
     }
     for (const name of clips) {
-      if (!/^\d+\.mp4$/i.test(name)) continue;
+      if (!/^\d+(-\d+)?\.mp4$/i.test(name)) continue;
       try { fs.unlinkSync(path.join(ALERT_CLIP_DIR, name)); } catch { /* already gone */ }
     }
     res.json({ ok: true });
@@ -281,7 +282,7 @@ app.post('/api/alerts/ack', (req, res) => {
 app.get('/api/alerts/:id/clip', (req, res) => {
   if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid alert' });
   const alert = getAlert(req.params.id);
-  if (!alert?.clip || !/^\d+\.mp4$/i.test(alert.clip)) {
+  if (!alert?.clip || !/^\d+(-\d+)?\.mp4$/i.test(alert.clip)) {
     return res.status(404).json({ error: 'Clip not available' });
   }
   res.set('Cache-Control', 'no-store');
@@ -300,10 +301,22 @@ app.get('/api/snapshots/:file', (req, res) => {
 });
 
 // ---------- boot ----------
+function cleanupAlerts() {
+  const grouped = consolidateAlerts();
+  const expired = pruneOldAlerts();
+  const clips = new Set([...grouped.clips, ...expired.clips]);
+  for (const name of clips) removeAlertClip(name);
+  if (grouped.alerts || expired.alerts || clips.size) {
+    console.log(`Alerts: folded ${grouped.alerts} repeats, expired ${expired.alerts}, removed ${clips.size} clips`);
+  }
+}
+
 const snapshotCleanup = cleanupSnapshots();
 if (snapshotCleanup.deduped || snapshotCleanup.orphans) {
   console.log(`Snapshots: removed ${snapshotCleanup.deduped} duplicates and ${snapshotCleanup.orphans} unused files`);
 }
+cleanupAlerts();
+setInterval(cleanupAlerts, 60 * 60 * 1000).unref();
 for (const cam of getCameras()) if (cam.enabled) streams.startCamera(cam);
 detection.start();
 

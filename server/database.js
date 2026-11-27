@@ -81,6 +81,9 @@ ensureColumn('objects', 'named', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('objects', 'candidate_of', 'TEXT');
 ensureColumn('objects', 'candidate_score', 'REAL');
 ensureColumn('alerts', 'clip', 'TEXT');
+ensureColumn('alerts', 'repeats', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('alerts', 'last_seen_at', 'TEXT');
+db.exec('UPDATE alerts SET last_seen_at = created_at WHERE last_seen_at IS NULL');
 
 const PREFIX = { car: 'CAR', truck: 'TRK', bus: 'BUS', person: 'PER', bicycle: 'BIK', motorcycle: 'MOT', cat: 'CAT', dog: 'DOG' };
 const LABEL = { car: 'Car', truck: 'Truck', bus: 'Bus', person: 'Person', bicycle: 'Bicycle', motorcycle: 'Motorcycle', cat: 'Cat', dog: 'Dog' };
@@ -401,24 +404,44 @@ export function recordSighting({ object, camera, confidence, bbox, snapshot, see
   let alert = null;
   // Stay quiet until we've seen this object more than twice.
   const seen = db.prepare('SELECT sightings FROM objects WHERE id = ?').get(object.id).sightings;
-  const lastAlert = db.prepare(`SELECT created_at FROM alerts WHERE object_id = ? AND camera_id = ? ORDER BY created_at DESC LIMIT 1`)
+  const lastAlert = db.prepare(`SELECT COALESCE(last_seen_at, created_at) AS last_at FROM alerts
+    WHERE object_id = ? AND camera_id = ? ORDER BY last_at DESC LIMIT 1`)
     .get(object.id, camera.id);
-  const quiet = lastAlert && (Date.parse(seenAt) - Date.parse(lastAlert.created_at)) < alertCooldownMs;
+  const quiet = lastAlert && (Date.parse(seenAt) - Date.parse(lastAlert.last_at)) < alertCooldownMs;
   if (seen >= MIN_SIGHTINGS && !quiet) {
     const message = `${object.name} showed up in camera ${camera.name}`;
-    const inserted = db.prepare(`INSERT INTO alerts(object_id, sighting_id, camera_id, camera_name, message, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(object.id, sightingId, camera.id, camera.name, message, seenAt);
+    // Repeat sightings fold into one unacknowledged alert so the dropdown and
+    // the clip folder don't grow with every re-arrival.
+    const active = db.prepare(`SELECT id FROM alerts
+      WHERE object_id = ? AND camera_id = ? AND ack = 0 ORDER BY id DESC LIMIT 1`)
+      .get(object.id, camera.id);
+    let alertId;
+    let repeats = 1;
+    let createdAt = seenAt;
+    if (active) {
+      alertId = active.id;
+      db.prepare('UPDATE alerts SET sighting_id = ?, last_seen_at = ?, repeats = repeats + 1 WHERE id = ?')
+        .run(sightingId, seenAt, alertId);
+      const updated = db.prepare('SELECT created_at, repeats FROM alerts WHERE id = ?').get(alertId);
+      createdAt = updated.created_at;
+      repeats = updated.repeats;
+    } else {
+      const inserted = db.prepare(`INSERT INTO alerts(object_id, sighting_id, camera_id, camera_name,
+        message, created_at, last_seen_at, repeats) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`)
+        .run(object.id, sightingId, camera.id, camera.name, message, seenAt, seenAt);
+      alertId = Number(inserted.lastInsertRowid);
+    }
     alert = {
-      id: Number(inserted.lastInsertRowid),
-      message, cameraName: camera.name, createdAt: seenAt, objectId: object.id,
+      id: alertId, message, cameraName: camera.name, createdAt, lastSeen: seenAt,
+      repeats, objectId: object.id,
     };
   }
   return { sighting: sightingRow(db.prepare(`${SIGHTING_SELECT} WHERE s.id = ?`).get(sightingId)), alert };
 }
 
 const ALERT_SELECT = `SELECT a.id, a.object_id, a.sighting_id, a.camera_id, a.camera_name,
-  a.message, a.created_at, a.ack, a.clip, o.name, o.identifier, o.kind, s.snapshot
+  a.message, a.created_at, a.last_seen_at, a.repeats, a.ack, a.clip,
+  o.name, o.identifier, o.kind, s.snapshot
   FROM alerts a JOIN objects o ON o.id = a.object_id
   LEFT JOIN sightings s ON s.id = a.sighting_id`;
 
@@ -434,6 +457,8 @@ function alertRow(row) {
     cameraName: row.camera_name,
     message: row.message,
     createdAt: row.created_at,
+    lastSeen: row.last_seen_at || row.created_at,
+    repeats: row.repeats || 1,
     ack: Boolean(row.ack),
     hasClip: Boolean(row.clip),
     clip: row.clip || null,
@@ -447,13 +472,63 @@ export function getAlert(id) {
 
 export function listAlerts({ since = 0, limit = 50 } = {}) {
   return db.prepare(`${ALERT_SELECT}
-    WHERE a.id > ? AND o.sightings >= ? ORDER BY a.id DESC LIMIT ?`)
+    WHERE a.id > ? AND o.sightings >= ?
+    ORDER BY COALESCE(a.last_seen_at, a.created_at) DESC, a.id DESC LIMIT ?`)
     .all(Number(since) || 0, MIN_SIGHTINGS, Math.min(Number(limit) || 50, 200))
     .map(alertRow);
 }
 
+// Returns the previous clip name so the caller can remove the replaced file.
 export function setAlertClip(id, clip) {
+  const previous = db.prepare('SELECT clip FROM alerts WHERE id = ?').get(id);
   db.prepare('UPDATE alerts SET clip = ? WHERE id = ?').run(clip, id);
+  return previous?.clip || null;
+}
+
+// Older databases have one alert row per re-arrival. Fold them into one row per
+// object and camera so the dropdown and clip folder shrink immediately on
+// upgrade. New sightings use the same rolling row from then on.
+export function consolidateAlerts() {
+  const groups = db.prepare(`SELECT object_id, camera_id FROM alerts
+    GROUP BY object_id, camera_id HAVING COUNT(*) > 1`).all();
+  const fold = db.prepare(`UPDATE alerts SET created_at = ?, last_seen_at = ?, repeats = ?,
+    sighting_id = ?, clip = COALESCE(clip, ?) WHERE id = ?`);
+  const remove = db.prepare('DELETE FROM alerts WHERE id = ?');
+  let alerts = 0;
+  const clips = new Set();
+  for (const group of groups) {
+    const rows = db.prepare(`SELECT id, sighting_id, clip, created_at,
+      COALESCE(last_seen_at, created_at) AS last_at, COALESCE(repeats, 1) AS repeats
+      FROM alerts WHERE object_id = ? AND camera_id = ? ORDER BY id`)
+      .all(group.object_id, group.camera_id);
+    if (rows.length < 2) continue;
+    const keep = rows[rows.length - 1];
+    // Prefer the newest clip; an older one is only used if the newest alert
+    // never recorded video.
+    const chosenClip = rows.reduce((found, row) => row.clip || found, null);
+    const repeats = rows.reduce((sum, row) => sum + row.repeats, 0);
+    const lastSeen = rows.reduce((latest, row) => (row.last_at > latest ? row.last_at : latest), rows[0].last_at);
+    fold.run(rows[0].created_at, lastSeen, repeats, keep.sighting_id, chosenClip, keep.id);
+    for (const row of rows) {
+      if (row.id === keep.id) continue;
+      remove.run(row.id);
+      alerts += 1;
+      if (row.clip && row.clip !== chosenClip) clips.add(row.clip);
+    }
+  }
+  return { alerts, clips: [...clips] };
+}
+
+// Keep seven days of alert history by default. An alert that is still getting
+// repeat sightings stays because its last_seen_at keeps moving forward.
+export function pruneOldAlerts(maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
+  const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+  const clips = db.prepare(`SELECT clip FROM alerts
+    WHERE clip IS NOT NULL AND COALESCE(last_seen_at, created_at) < ?`)
+    .all(cutoff).map((row) => row.clip);
+  const alerts = db.prepare(`DELETE FROM alerts WHERE COALESCE(last_seen_at, created_at) < ?`)
+    .run(cutoff).changes;
+  return { alerts, clips };
 }
 
 export function ackAlerts(ids, all = false) {

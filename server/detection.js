@@ -10,7 +10,7 @@ import {
   createObject, updateObjectSignature, recordSighting, saveSnapshot,
   removeSnapshotIfUnreferenced, setAlertClip, counts,
 } from './database.js';
-import { ALERT_CLIP_DIR, recordAlertClip } from './clips.js';
+import { ALERT_CLIP_DIR, recordAlertClip, removeAlertClip } from './clips.js';
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const CAPTURE_TIMEOUT_MS = 15_000;
@@ -206,9 +206,14 @@ class DetectionLoop {
       removeSnapshotIfUnreferenced(snapshot);
     }
     if (result.alert) {
-      const clip = `${result.alert.id}.mp4`;
+      // A unique name keeps a still-playing old clip intact until the new one
+      // is ready; the replaced file is then removed.
+      const clip = `${result.alert.id}-${Date.now()}.mp4`;
       recordAlertClip(camera, path.join(ALERT_CLIP_DIR, clip))
-        .then(() => setAlertClip(result.alert.id, clip))
+        .then(() => {
+          const previous = setAlertClip(result.alert.id, clip);
+          if (previous && previous !== clip) removeAlertClip(previous);
+        })
         .catch((err) => console.warn(`Could not save clip for alert ${result.alert.id}: ${err.message}`));
     }
   }

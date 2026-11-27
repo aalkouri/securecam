@@ -409,15 +409,19 @@ const snapshotUrl = (name) => `/api/snapshots/${encodeURIComponent(name)}`;
 
 function renderAlertList() {
   alertsList.innerHTML = latestAlerts.length
-    ? latestAlerts.map((a) => `
+    ? latestAlerts.map((a) => {
+      const repeats = Number(a.repeats) > 1 ? ` · ${a.repeats} sightings` : '';
+      const last = a.lastSeen && a.lastSeen !== a.createdAt ? ` · last ${when(a.lastSeen)}` : '';
+      return `
         <button type="button" class="alert-item ${a.ack ? 'acked' : ''}" data-alert="${a.id}">
           ${a.snapshot ? `<img src="${snapshotUrl(a.snapshot)}" alt="" class="alert-thumb">` : ''}
           <span class="alert-text">
             <strong>${esc(a.message)}</strong>
-            <span class="hint">${esc(a.cameraName)} · ${when(a.createdAt)}</span>
+            <span class="hint">${esc(a.cameraName)} · ${esc(when(a.createdAt))}${esc(repeats)}${esc(last)}</span>
           </span>
           <span class="alert-play">${a.hasClip ? '▶ clip' : 'view'}</span>
-        </button>`).join('')
+        </button>`;
+    }).join('')
     : '<p class="hint">No alerts yet.</p>';
 }
 
@@ -456,7 +460,7 @@ function openClip(alert) {
   clipStill.classList.toggle('hidden', alert.hasClip || !hasStill);
   clipStill.src = hasStill ? snapshotUrl(alert.snapshot) : '';
   clipNote.textContent = alert.hasClip
-    ? '5-second clip from this alert.'
+    ? 'Latest 5-second 1080p clip from this alert.'
     : hasStill ? 'No clip was saved for this alert.' : 'No media was saved for this alert.';
   clipModal.classList.remove('hidden');
   if (alert.hasClip) {
