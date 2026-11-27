@@ -6,6 +6,7 @@
 //     "publicUrl": "https://cams.example.com",
 //     "google": { "clientId": "...", "clientSecret": "..." },
 //     "resend": { "apiKey": "...", "from": "SecureCam <noreply@example.com>" },
+//     "contactEmail": "privacy@example.com",
 //     "allowSignup": true,
 //     "restrictCameraHosts": true,
 //     "maxCamerasPerUser": 4
@@ -29,6 +30,8 @@ export const config = {
   googleClientSecret: env.GOOGLE_CLIENT_SECRET || file.google?.clientSecret || '',
   resendApiKey: env.RESEND_API_KEY || file.resend?.apiKey || '',
   mailFrom: env.MAIL_FROM || file.resend?.from || '',
+  // Shown on the privacy page as the address for questions and requests.
+  contactEmail: String(env.CONTACT_EMAIL || file.contactEmail || '').trim(),
   // Let anyone create an account. Each account only ever sees its own cameras.
   allowSignup: flag(env.ALLOW_SIGNUP, file.allowSignup, true),
   // Public deployments: accounts other than the admin may not point a camera at

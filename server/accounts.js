@@ -58,7 +58,7 @@ export function registerAccountRoutes(app, publicDir) {
   app.get([...PAGES, ...PUBLIC_ASSETS], (req, res) => res.sendFile(path.join(publicDir, req.path)));
 
   // Short addresses for the pages people type or link to.
-  for (const name of ['login', 'signup', 'forgot', 'reset']) {
+  for (const name of ['login', 'signup', 'forgot', 'reset', 'privacy']) {
     app.get(`/${name}`, (req, res) => res.sendFile(path.join(publicDir, `${name}.html`)));
   }
 
@@ -77,6 +77,7 @@ export function registerAccountRoutes(app, publicDir) {
     google: googleEnabled,
     mail: mailEnabled,
     minPassword: MIN_PASSWORD,
+    contact: config.contactEmail || null,
   }));
 
   app.post('/api/setup', (req, res) => {
