@@ -16,6 +16,37 @@ const tiles = new Map(); // id -> { el, player, camera }
 let editingId = null;
 let buildings = [];
 
+// Admin account switching.
+const accountSwitcher = document.getElementById('account-switcher');
+const accountSelect = document.getElementById('account-select');
+const adminPicker = document.getElementById('admin-picker');
+const adminPickerSelect = document.getElementById('admin-picker-select');
+let accountState = null;
+
+// Floor-plan editor state.
+const planSelect = document.getElementById('floorplan-building');
+const planOutlineName = document.getElementById('floorplan-outline-name');
+const planRoomsEl = document.getElementById('floorplan-rooms');
+const planEmpty = document.getElementById('floorplan-empty');
+const roomTpl = document.getElementById('room-template');
+const roomDialog = document.getElementById('room-dialog');
+const roomForm = document.getElementById('room-form');
+const roomError = document.getElementById('room-error');
+const roomNameInput = document.getElementById('room-name');
+const renameDialog = document.getElementById('rename-dialog');
+const renameForm = document.getElementById('rename-form');
+const renameInput = document.getElementById('rename-input');
+const renameError = document.getElementById('rename-error');
+const noticeDialog = document.getElementById('notice-dialog');
+const noticeText = document.getElementById('notice-text');
+const noticeCancel = document.getElementById('notice-cancel');
+const noticeOk = document.getElementById('notice-ok');
+let cameraCounts = new Map();
+let activeRoomDrag = null;
+let activeRoomResize = null;
+let renameTarget = null;
+let noticeResolver = null;
+
 // Can this browser decode H.265 (what Reolink 4K main streams use)?
 const HEVC_CODEC = 'video/mp4; codecs="hvc1.1.6.L153.B0"';
 const PLAYS_HEVC = Boolean(
@@ -152,6 +183,12 @@ async function refresh() {
     return;
   }
   empty.classList.toggle('hidden', cameras.length > 0);
+  cameraCounts = new Map();
+  for (const camera of cameras) {
+    if (!camera.buildingId || !camera.roomId) continue;
+    cameraCounts.set(camera.roomId, (cameraCounts.get(camera.roomId) || 0) + 1);
+  }
+  updateFloorplanCounts();
   const seen = new Set();
   for (const camera of cameras) {
     seen.add(camera.id);
@@ -487,6 +524,7 @@ async function loadPlacements() {
   if (previous && [...select.options].some((option) => option.value === previous)) select.value = previous;
   else select.value = buildings[0]?.id || '__new__';
   setRoomOptions(select.value === '__new__' ? '' : select.value);
+  renderFloorplan();
 }
 
 function setRoomOptions(buildingId, selectedId = '') {
@@ -525,6 +563,374 @@ field('cam-building').addEventListener('change', () => {
 });
 field('cam-room').addEventListener('change', updatePlacementFields);
 
+// ---------- interactive building floor plan ----------
+const planPercent = (value, min, max) => {
+  const n = Number(value);
+  return Number(Math.min(max, Math.max(min, Number.isFinite(n) ? n : min)).toFixed(2));
+};
+
+function currentPlanBuilding() {
+  return buildings.find((building) => building.id === planSelect.value) || null;
+}
+
+function normalizeLayout(layout = {}) {
+  const w = planPercent(layout.w, 8, 100);
+  const h = planPercent(layout.h, 10, 100);
+  return {
+    w, h,
+    x: planPercent(layout.x, 0, 100 - w),
+    y: planPercent(layout.y, 0, 100 - h),
+  };
+}
+
+function setRoomVars(el, layout) {
+  const { x, y, w, h } = normalizeLayout(layout);
+  el.style.setProperty('--x', x.toFixed(2));
+  el.style.setProperty('--y', y.toFixed(2));
+  el.style.setProperty('--w', w.toFixed(2));
+  el.style.setProperty('--h', h.toFixed(2));
+}
+
+function cameraCountText(roomId) {
+  const count = cameraCounts.get(roomId) || 0;
+  return count ? `${count} camera${count === 1 ? '' : 's'}` : '';
+}
+
+function renderFloorplan() {
+  const remembered = localStorage.getItem('securecam.building');
+  const wanted = planSelect.value || remembered || buildings[0]?.id || '';
+  planSelect.innerHTML = buildings.length
+    ? buildings.map((building) => `<option value="${esc(building.id)}">${esc(building.name)}</option>`).join('')
+    : '<option value="">No buildings</option>';
+  const chosen = buildings.some((building) => building.id === wanted) ? wanted : (buildings[0]?.id || '');
+  planSelect.value = chosen;
+  if (chosen) localStorage.setItem('securecam.building', chosen);
+  planOutlineName.textContent = currentPlanBuilding()?.name || '';
+  planOutlineName.title = planOutlineName.textContent ? `Rename ${planOutlineName.textContent}` : 'Rename building';
+  renderFloorplanRooms();
+}
+
+function updateFloorplanCounts() {
+  for (const el of planRoomsEl.querySelectorAll('.plan-room')) {
+    el.querySelector('.plan-count').textContent = cameraCountText(el.dataset.roomId);
+  }
+}
+
+function renderFloorplanRooms() {
+  planRoomsEl.innerHTML = '';
+  const building = currentPlanBuilding();
+  const rooms = building?.rooms || [];
+  planEmpty.classList.toggle('hidden', rooms.length > 0);
+  for (const room of rooms) {
+    const el = roomTpl.content.firstElementChild.cloneNode(true);
+    el.dataset.roomId = room.id;
+    el.setAttribute('aria-label', `${room.name} room. Drag to move, corner to resize.`);
+    setRoomVars(el, room);
+    const nameButton = el.querySelector('.plan-room-name');
+    nameButton.textContent = room.name;
+    nameButton.title = `Rename ${room.name}`;
+    nameButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    nameButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openRename('room', room);
+    });
+    el.querySelector('.plan-count').textContent = cameraCountText(room.id);
+    const addButton = el.querySelector('.plan-add-cam');
+    addButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    addButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDialog(null, { buildingId: building.id, roomId: room.id });
+    });
+    const closeButton = el.querySelector('.plan-room-close');
+    closeButton.title = `Delete ${room.name}`;
+    closeButton.setAttribute('aria-label', `Delete ${room.name}`);
+    closeButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    closeButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteRoomFromPlan(room);
+    });
+    const resizeHandle = el.querySelector('.plan-resize');
+    resizeHandle.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      startRoomResize(e, room, el);
+    });
+    resizeHandle.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      handleResizeKeys(e, room, el);
+    });
+    el.addEventListener('pointerdown', (e) => startRoomDrag(e, room, el));
+    el.addEventListener('keydown', (e) => handleRoomKeys(e, room, el));
+    planRoomsEl.appendChild(el);
+  }
+}
+
+async function saveRoomLayout(room, layout) {
+  const payload = normalizeLayout(layout);
+  try {
+    await api(`/api/rooms/${encodeURIComponent(room.id)}/layout`, {
+      method: 'PUT', body: JSON.stringify(payload),
+    });
+    Object.assign(room, payload);
+  } catch (err) {
+    // Put everything back where the server last saved it.
+    await loadPlacements().catch(() => renderFloorplanRooms());
+  }
+}
+
+function startRoomDrag(e, room, el) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  if (e.target.closest('button')) return;
+  e.preventDefault();
+  const bounds = planRoomsEl.getBoundingClientRect();
+  const layout = {
+    x: Number(room.x) || 6, y: Number(room.y) || 12,
+    w: Number(room.w) || 28, h: Number(room.h) || 24,
+  };
+  activeRoomDrag = {
+    id: e.pointerId, el, room, bounds,
+    startX: e.clientX, startY: e.clientY,
+    origin: { ...layout }, layout, moved: false,
+  };
+  el.classList.add('dragging');
+  el.setPointerCapture?.(e.pointerId);
+
+  const onMove = (ev) => {
+    const drag = activeRoomDrag;
+    if (!drag || ev.pointerId !== drag.id) return;
+    const dx = (ev.clientX - drag.startX) / drag.bounds.width * 100;
+    const dy = (ev.clientY - drag.startY) / drag.bounds.height * 100;
+    drag.layout.x = planPercent(drag.origin.x + dx, 0, 100 - drag.layout.w);
+    drag.layout.y = planPercent(drag.origin.y + dy, 0, 100 - drag.layout.h);
+    if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) drag.moved = true;
+    setRoomVars(drag.el, drag.layout);
+  };
+
+  const onEnd = (ev) => {
+    const drag = activeRoomDrag;
+    if (!drag || ev.pointerId !== drag.id) return;
+    el.removeEventListener('pointermove', onMove);
+    el.removeEventListener('pointerup', onEnd);
+    el.removeEventListener('pointercancel', onEnd);
+    el.releasePointerCapture?.(ev.pointerId);
+    el.classList.remove('dragging');
+    activeRoomDrag = null;
+    if (drag.moved) saveRoomLayout(drag.room, drag.layout);
+  };
+
+  el.addEventListener('pointermove', onMove);
+  el.addEventListener('pointerup', onEnd);
+  el.addEventListener('pointercancel', onEnd);
+}
+
+function startRoomResize(e, room, el) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  e.preventDefault();
+  const bounds = planRoomsEl.getBoundingClientRect();
+  const layout = normalizeLayout(room);
+  activeRoomResize = {
+    id: e.pointerId, el, room, bounds,
+    startX: e.clientX, startY: e.clientY,
+    origin: { ...layout }, layout, moved: false,
+  };
+  el.classList.add('resizing');
+  el.setPointerCapture?.(e.pointerId);
+
+  const onMove = (ev) => {
+    const resize = activeRoomResize;
+    if (!resize || ev.pointerId !== resize.id) return;
+    const dx = (ev.clientX - resize.startX) / resize.bounds.width * 100;
+    const dy = (ev.clientY - resize.startY) / resize.bounds.height * 100;
+    resize.layout.w = planPercent(resize.origin.w + dx, 8, 100 - resize.origin.x);
+    resize.layout.h = planPercent(resize.origin.h + dy, 10, 100 - resize.origin.y);
+    if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) resize.moved = true;
+    setRoomVars(resize.el, resize.layout);
+  };
+
+  const onEnd = (ev) => {
+    const resize = activeRoomResize;
+    if (!resize || ev.pointerId !== resize.id) return;
+    el.removeEventListener('pointermove', onMove);
+    el.removeEventListener('pointerup', onEnd);
+    el.removeEventListener('pointercancel', onEnd);
+    el.releasePointerCapture?.(ev.pointerId);
+    el.classList.remove('resizing');
+    activeRoomResize = null;
+    if (resize.moved) saveRoomLayout(resize.room, resize.layout);
+  };
+
+  el.addEventListener('pointermove', onMove);
+  el.addEventListener('pointerup', onEnd);
+  el.addEventListener('pointercancel', onEnd);
+}
+
+function handleResizeKeys(e, room, el) {
+  const step = e.shiftKey ? 5 : 1;
+  let dx = 0;
+  let dy = 0;
+  if (e.key === 'ArrowLeft') dx = -step;
+  else if (e.key === 'ArrowRight') dx = step;
+  else if (e.key === 'ArrowUp') dy = -step;
+  else if (e.key === 'ArrowDown') dy = step;
+  else return;
+  e.preventDefault();
+  const layout = normalizeLayout(room);
+  layout.w = planPercent(layout.w + dx, 8, 100 - layout.x);
+  layout.h = planPercent(layout.h + dy, 10, 100 - layout.y);
+  setRoomVars(el, layout);
+  saveRoomLayout(room, layout);
+}
+
+function handleRoomKeys(e, room, el) {
+  if (e.target.closest('button')) return;
+  const step = e.shiftKey ? 5 : 1;
+  let dx = 0;
+  let dy = 0;
+  if (e.key === 'ArrowLeft') dx = -step;
+  else if (e.key === 'ArrowRight') dx = step;
+  else if (e.key === 'ArrowUp') dy = -step;
+  else if (e.key === 'ArrowDown') dy = step;
+  else return;
+  e.preventDefault();
+  const layout = {
+    x: planPercent(Number(room.x) + dx, 0, 100 - Number(room.w || 28)),
+    y: planPercent(Number(room.y) + dy, 0, 100 - Number(room.h || 24)),
+    w: Number(room.w) || 28,
+    h: Number(room.h) || 24,
+  };
+  setRoomVars(el, layout);
+  saveRoomLayout(room, layout);
+}
+
+function openRoomDialog() {
+  const building = currentPlanBuilding();
+  if (!building) return;
+  roomError.textContent = '';
+  roomNameInput.value = '';
+  document.getElementById('room-dialog-building').textContent = `This room will be added to ${building.name}.`;
+  roomDialog.showModal();
+  roomNameInput.focus();
+}
+
+planSelect.addEventListener('change', () => {
+  localStorage.setItem('securecam.building', planSelect.value);
+  planOutlineName.textContent = currentPlanBuilding()?.name || '';
+  planOutlineName.title = planOutlineName.textContent ? `Rename ${planOutlineName.textContent}` : 'Rename building';
+  renderFloorplanRooms();
+});
+document.getElementById('floorplan-add-room').addEventListener('click', openRoomDialog);
+document.getElementById('room-cancel').addEventListener('click', () => roomDialog.close());
+roomForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const building = currentPlanBuilding();
+  if (!building) return;
+  const name = roomNameInput.value.trim();
+  if (!name) {
+    roomError.textContent = 'Enter a room name.';
+    return;
+  }
+  const button = roomForm.querySelector('button[type="submit"]');
+  button.disabled = true;
+  roomError.textContent = '';
+  try {
+    await api(`/api/buildings/${encodeURIComponent(building.id)}/rooms`, {
+      method: 'POST', body: JSON.stringify({ name }),
+    });
+    roomDialog.close();
+    await loadPlacements();
+  } catch (err) {
+    roomError.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// A single small dialog handles both "heads up" messages and delete confirms.
+function showNotice(text, { confirm = false, okLabel = 'OK' } = {}) {
+  noticeText.textContent = text;
+  noticeCancel.classList.toggle('hidden', !confirm);
+  noticeOk.textContent = okLabel;
+  noticeDialog.showModal();
+  return new Promise((resolve) => { noticeResolver = resolve; });
+}
+
+function finishNotice(value) {
+  const resolve = noticeResolver;
+  noticeResolver = null;
+  noticeDialog.close();
+  if (resolve) resolve(value);
+}
+
+noticeOk.addEventListener('click', () => finishNotice(true));
+noticeCancel.addEventListener('click', () => finishNotice(false));
+noticeDialog.addEventListener('close', () => {
+  if (noticeResolver) {
+    const resolve = noticeResolver;
+    noticeResolver = null;
+    resolve(false);
+  }
+});
+
+function openRename(type, item) {
+  renameTarget = { type, id: item.id, name: item.name };
+  document.getElementById('rename-title').textContent = type === 'building' ? 'Rename building' : 'Rename room';
+  document.getElementById('rename-label').textContent = type === 'building' ? 'Building name' : 'Room name';
+  renameInput.value = item.name;
+  renameError.textContent = '';
+  renameDialog.showModal();
+  renameInput.focus();
+  renameInput.select();
+}
+
+planOutlineName.addEventListener('click', () => {
+  const building = currentPlanBuilding();
+  if (building) openRename('building', building);
+});
+document.getElementById('rename-cancel').addEventListener('click', () => renameDialog.close());
+renameForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!renameTarget) return;
+  const name = renameInput.value.trim();
+  if (!name) {
+    renameError.textContent = 'Enter a name.';
+    return;
+  }
+  const target = renameTarget;
+  const path = target.type === 'building'
+    ? `/api/buildings/${encodeURIComponent(target.id)}`
+    : `/api/rooms/${encodeURIComponent(target.id)}`;
+  const button = renameForm.querySelector('button[type="submit"]');
+  button.disabled = true;
+  renameError.textContent = '';
+  try {
+    await api(path, { method: 'PUT', body: JSON.stringify({ name }) });
+    renameDialog.close();
+    renameTarget = null;
+    await loadPlacements();
+  } catch (err) {
+    renameError.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+async function deleteRoomFromPlan(room) {
+  const count = cameraCounts.get(room.id) || 0;
+  if (count) {
+    await showNotice(`“${room.name}” still has ${count} camera${count === 1 ? '' : 's'}. Delete ${count === 1 ? 'that camera' : 'all cameras'} in this room first.`);
+    return;
+  }
+  const ok = await showNotice(`Delete room “${room.name}”? This cannot be undone.`, {
+    confirm: true, okLabel: 'Delete',
+  });
+  if (!ok) return;
+  try {
+    await api(`/api/rooms/${encodeURIComponent(room.id)}`, { method: 'DELETE' });
+    await loadPlacements();
+  } catch (err) {
+    await showNotice(err.message);
+  }
+}
+
 field('cam-host').addEventListener('change', () => {
   const value = field('cam-host').value.trim();
   if (!/^(test|clip):\/\//i.test(value)) return;
@@ -554,7 +960,7 @@ field('cam-url').addEventListener('input', () => {
   field('cam-sample').value = match ? value : '';
 });
 
-async function openDialog(camera) {
+async function openDialog(camera, placement = {}) {
   editingId = camera?.id || null;
   camError.textContent = '';
   testResult.classList.add('hidden');
@@ -571,8 +977,10 @@ async function openDialog(camera) {
   if (!buildingSelect.options.length) {
     buildingSelect.innerHTML = '<option value="__new__">+ Create new building…</option>';
   }
-  const buildingId = camera?.buildingId && buildings.some((b) => b.id === camera.buildingId)
-    ? camera.buildingId
+  const preferredBuilding = placement.buildingId || camera?.buildingId;
+  const preferredRoom = placement.roomId || camera?.roomId;
+  const buildingId = preferredBuilding && buildings.some((b) => b.id === preferredBuilding)
+    ? preferredBuilding
     : (buildings[0]?.id || '__new__');
   buildingSelect.value = buildingId;
   field('cam-new-building').value = '';
@@ -581,7 +989,7 @@ async function openDialog(camera) {
     field('cam-room').innerHTML = '<option value="">Choose a room…</option>';
     updatePlacementFields();
   } else {
-    setRoomOptions(buildingId, camera?.roomId || '');
+    setRoomOptions(buildingId, preferredRoom || '');
   }
   field('cam-name').value = camera?.name || '';
   field('cam-type').value = camera?.type || 'reolink';
@@ -918,11 +1326,74 @@ async function pollAlerts() {
   } catch { /* api() handles authentication failures */ }
 }
 
-pollAlerts();
-setInterval(pollAlerts, 5000);
+// ---------- admin account switching ----------
+function accountOptions(accounts = [], withPrompt = false) {
+  const prompt = withPrompt ? ['<option value="">Choose an account…</option>'] : [];
+  return prompt.concat(accounts.map((account) => {
+    const suffix = account.role === 'admin' ? ' (admin)' : '';
+    return `<option value="${account.id}">${esc(account.name)}${suffix}</option>`;
+  })).join('');
+}
 
-loadPlacements()
-  .then(() => { startOnboarding(); })
-  .catch(() => { /* openDialog retries when needed */ });
-refresh();
-setInterval(refresh, 3000);
+// Returns false while an admin is at the account picker, so no customer data
+// is fetched or shown until they choose who to view.
+function applyAccountState(me) {
+  accountState = me;
+  if (!me.isAdmin) {
+    accountSwitcher.classList.add('hidden');
+    document.body.classList.remove('admin-picking');
+    adminPicker.classList.add('hidden');
+    return true;
+  }
+  accountSelect.innerHTML = accountOptions(me.accounts, true);
+  adminPickerSelect.innerHTML = accountOptions(me.accounts, true);
+  const chosen = me.viewingAsSelf ? '' : String(me.viewingId);
+  accountSelect.value = chosen;
+  adminPickerSelect.value = chosen;
+  accountSwitcher.classList.remove('hidden');
+  document.body.classList.toggle('admin-picking', me.viewingAsSelf);
+  adminPicker.classList.toggle('hidden', !me.viewingAsSelf);
+  return !me.viewingAsSelf;
+}
+
+async function viewAccount(userId) {
+  if (!accountState?.isAdmin) return;
+  try {
+    await api('/api/accounts/view', { method: 'PUT', body: JSON.stringify({ userId }) });
+  } catch (err) {
+    await showNotice(err.message);
+    return;
+  }
+  location.reload();
+}
+
+accountSelect.addEventListener('change', () => viewAccount(accountSelect.value));
+document.getElementById('admin-picker-open').addEventListener('click', () => {
+  if (!adminPickerSelect.value) {
+    adminPickerSelect.focus();
+    return;
+  }
+  viewAccount(adminPickerSelect.value);
+});
+
+const dashboardActive = () => !document.body.classList.contains('admin-picking');
+
+async function boot() {
+  let me;
+  try {
+    me = await api('/api/me');
+  } catch {
+    return;
+  }
+  if (!applyAccountState(me)) return;
+  try {
+    await loadPlacements();
+    startOnboarding();
+  } catch { /* openDialog retries when needed */ }
+  refresh();
+  pollAlerts();
+}
+
+setInterval(() => { if (dashboardActive()) pollAlerts(); }, 5000);
+setInterval(() => { if (dashboardActive()) refresh(); }, 3000);
+boot();

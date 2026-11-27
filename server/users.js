@@ -81,6 +81,13 @@ export function adminId() {
   return db.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").get()?.id ?? null;
 }
 
+// Safe account list for the admin's "view as" picker — no hashes or tokens.
+export function listUsers() {
+  return db.prepare(`SELECT id, email, username, role FROM users ORDER BY
+    CASE role WHEN 'admin' THEN 0 ELSE 1 END, id`).all()
+    .map((row) => ({ id: row.id, name: row.email || row.username, role: row.role }));
+}
+
 export function getUser(id) {
   return userRow(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
 }

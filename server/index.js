@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { getSettings, getCameras, saveCameras } from './store.js';
 import { isSetupComplete, requireAuth, requireAdmin } from './auth.js';
 import { registerAccountRoutes } from './accounts.js';
-import { adminId, closeUsers } from './users.js';
+import { adminId, listUsers, getUser, closeUsers } from './users.js';
 import { assertCameraAllowed } from './guard.js';
 import { streams, STREAM_DIR, probe } from './streams.js';
 import { validateCamera, publicCamera, gridUrl, hdUrl, migrateTestCameraUrls } from './cameras.js';
@@ -18,8 +18,9 @@ import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
   listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots,
   consolidateAlerts, pruneOldAlerts, closeDatabase, ownsSnapshot,
-  listBuildings, createBuilding, createRoom, resolveCameraPlacement,
-  setCameraPlacement, deleteCameraPlacement, getCameraPlacements,
+  listBuildings, createBuilding, createRoom, updateRoomLayout, renameBuilding, renameRoom,
+  deleteRoom, resolveCameraPlacement, setCameraPlacement, deleteCameraPlacement,
+  getCameraPlacements,
   ensureCameraPlacements,
 } from './database.js';
 
@@ -84,7 +85,32 @@ app.use('/streams', (req, res, next) => {
 }));
 app.use(express.static(publicDir));
 
-app.get('/api/me', (req, res) => res.json({ user: req.user.name, role: req.user.role }));
+app.get('/api/me', (req, res) => {
+  const isAdmin = req.actualUser.role === 'admin';
+  res.json({
+    user: req.user.name,
+    role: req.user.role,
+    isAdmin,
+    viewingId: req.user.id,
+    viewingName: req.user.name,
+    viewingAsSelf: !req.viewingId,
+    accounts: isAdmin ? listUsers() : null,
+  });
+});
+
+// An admin picks a sub-account here. The choice lives in the session, so every
+// later API and stream request sees that account's data, not the admin's.
+app.put('/api/accounts/view', requireAdmin, (req, res) => {
+  const raw = req.body?.userId;
+  if (raw === null || raw === '' || raw === 0 || raw === 'self') {
+    delete req.session.viewAs;
+    return res.json({ viewingId: req.actualUser.id });
+  }
+  const target = getUser(Number(raw));
+  if (!target) return res.status(404).json({ error: 'Account not found' });
+  req.session.viewAs = target.id;
+  res.json({ viewingId: target.id, viewingName: target.name });
+});
 
 // ----- building / room placement -----
 // Buildings and rooms belong to the account that created them.
@@ -98,12 +124,54 @@ app.post('/api/buildings', (req, res) => {
   }
 });
 
+app.put('/api/buildings/:id', (req, res) => {
+  try {
+    const building = renameBuilding(req.params.id, req.user.id, req.body?.name);
+    if (!building) return res.status(404).json({ error: 'Building not found' });
+    res.json(building);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.post('/api/buildings/:id/rooms', (req, res) => {
   try {
     res.status(201).json(createRoom(req.params.id, req.body?.name, req.user.id));
   } catch (err) {
     res.status(err.message === 'Building not found' ? 404 : 400).json({ error: err.message });
   }
+});
+
+app.put('/api/rooms/:id', (req, res) => {
+  try {
+    const room = renameRoom(req.params.id, req.user.id, req.body?.name);
+    if (!room) return res.status(404).json({ error: 'Room not found' });
+    res.json(room);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/rooms/:id', (req, res) => {
+  try {
+    const room = deleteRoom(req.params.id, req.user.id);
+    if (!room) return res.status(404).json({ error: 'Room not found' });
+    res.json(room);
+  } catch (err) {
+    const status = /camera/i.test(err.message) ? 409 : 400;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// Drag positions and resized corners are persisted per room, never globally.
+app.put('/api/rooms/:id/layout', (req, res) => {
+  const values = [req.body?.x, req.body?.y, req.body?.w, req.body?.h].map(Number);
+  if (!values.every(Number.isFinite)) {
+    return res.status(400).json({ error: 'Room position must be numeric' });
+  }
+  const layout = updateRoomLayout(req.params.id, req.user.id, req.body);
+  if (!layout) return res.status(404).json({ error: 'Room not found' });
+  res.json(layout);
 });
 
 function viewCamera(cam, placements) {

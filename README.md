@@ -35,13 +35,29 @@ An account that starts without a building is guided through a three-step setup
 on first sign-in: **Building → Room → Camera**. The guide cannot be dismissed;
 by the camera step, the new building and room are already filled in.
 
+The admin account starts at an **account picker**: a drop-down of every account
+on the server. No cameras, alerts or floor plan are shown until an account is
+selected. After choosing one, the dashboard is the same one that account's owner
+sees. The drop-down at the top of the page switches accounts at any time;
+choosing **Choose an account…** returns to the picker.
+
+The main page opens with an interactive floor plan. Use the **Building**
+drop-down to switch buildings, drag rooms to rearrange them, or drag the
+bottom-right corner of a room to resize it. Arrow keys also nudge a focused
+room or resize handle. Click the building or room title to rename it, use
+**+ Room** to add another room, or use the **✕** on a room to delete it. A room
+with cameras cannot be deleted until those cameras are removed. Positions and
+sizes are saved per room in SQLite.
+
 ## Adding cameras
 
 Click **+ Add camera**. Choose the **building**, then the **room** in that
 building; both are required. If you do not have one yet, select
 *+ Create new building…* or *+ Create new room…* and type the name inline. The
 building and room are stored in SQLite, and the room belongs to its building.
-Each camera tile shows its building and room.
+Each camera tile shows its building and room. You can also click **+ camera**
+inside a room on the floor plan; the form opens with that building and room
+already selected.
 
 - **Reolink:** choose *Reolink* and enter the camera's IP address, username
   (usually `admin`) and password. Turn on RTSP first in the Reolink app:

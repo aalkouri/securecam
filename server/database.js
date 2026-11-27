@@ -142,6 +142,12 @@ ensureColumn('alerts', 'last_seen_at', 'TEXT');
 // Which account an object belongs to. Sightings and alerts belong to their
 // object's owner. Everything from before accounts belongs to the admin (id 1).
 ensureColumn('objects', 'owner_id', 'INTEGER NOT NULL DEFAULT 1');
+// Floor-plan coordinates for each room. Values are percentages of the
+// building outline so the plan scales with the browser window.
+ensureColumn('rooms', 'x', 'REAL');
+ensureColumn('rooms', 'y', 'REAL');
+ensureColumn('rooms', 'w', 'REAL');
+ensureColumn('rooms', 'h', 'REAL');
 
 // Buildings were first created with names unique across the whole server.
 // SQLite cannot drop that constraint in place, so rebuild the table once:
@@ -167,6 +173,56 @@ if (!db.prepare('PRAGMA table_info(buildings)').all().some((col) => col.name ===
   `);
 }
 db.exec('UPDATE alerts SET last_seen_at = created_at WHERE last_seen_at IS NULL');
+
+// Default floor-plan slots. Rooms are percentages of the building square, so
+// a plan looks the same on a laptop and a phone. A few rooms sit in a loose
+// grid; larger buildings get more columns and shorter rooms.
+function roomLayouts(count) {
+  if (count <= 0) return [];
+  const cols = Math.min(4, Math.ceil(Math.sqrt(count)));
+  const rows = Math.ceil(count / cols);
+  const gap = 4;
+  const w = (92 - (cols - 1) * gap) / cols;
+  const rawH = (78 - (rows - 1) * gap) / rows;
+  const h = Math.min(30, rawH);
+  const totalH = rows * h + (rows - 1) * gap;
+  const top = 12 + (78 - totalH) / 2;
+  const round = (n) => Number(n.toFixed(2));
+  return Array.from({ length: count }, (_, i) => ({
+    x: round(4 + (i % cols) * (w + gap)),
+    y: round(top + Math.floor(i / cols) * (h + gap)),
+    w: round(w),
+    h: round(h),
+  }));
+}
+
+// Older rooms have no coordinates yet. Give each building's rooms a neat
+// starting layout without touching rooms the user has already arranged.
+db.exec('BEGIN IMMEDIATE');
+try {
+  const update = db.prepare('UPDATE rooms SET x = ?, y = ?, w = ?, h = ? WHERE id = ?');
+  for (const building of db.prepare('SELECT id FROM buildings').all()) {
+    const rooms = db.prepare(`SELECT id, x, y, w, h FROM rooms WHERE building_id = ?
+      ORDER BY created_at, name COLLATE NOCASE`).all(building.id);
+    const layouts = roomLayouts(rooms.length);
+    rooms.forEach((room, index) => {
+      if (room.x === null || room.y === null || room.w === null || room.h === null) {
+        const slot = layouts[index] || { x: 6, y: 20, w: 28, h: 24 };
+        update.run(slot.x, slot.y, slot.w, slot.h, room.id);
+      }
+    });
+  }
+  db.exec('COMMIT');
+} catch (err) {
+  db.exec('ROLLBACK');
+  throw err;
+}
+
+const clamp = (value, min, max, fallback) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+};
 
 const PREFIX = { car: 'CAR', truck: 'TRK', bus: 'BUS', person: 'PER', bicycle: 'BIK', motorcycle: 'MOT', cat: 'CAT', dog: 'DOG' };
 const LABEL = { car: 'Car', truck: 'Truck', bus: 'Bus', person: 'Person', bicycle: 'Bicycle', motorcycle: 'Motorcycle', cat: 'Cat', dog: 'Dog' };
@@ -212,8 +268,8 @@ function ownsBuilding(buildingId, ownerId) {
 
 export function listBuildings(ownerId) {
   const buildings = db.prepare('SELECT id, name, created_at AS createdAt FROM buildings WHERE owner_id = ? ORDER BY name COLLATE NOCASE').all(ownerId);
-  const rooms = db.prepare(`SELECT id, building_id AS buildingId, name, created_at AS createdAt
-    FROM rooms WHERE building_id IN (SELECT id FROM buildings WHERE owner_id = ?)
+  const rooms = db.prepare(`SELECT id, building_id AS buildingId, name, created_at AS createdAt,
+    x, y, w, h FROM rooms WHERE building_id IN (SELECT id FROM buildings WHERE owner_id = ?)
     ORDER BY name COLLATE NOCASE`).all(ownerId);
   return buildings.map((building) => ({
     id: building.id,
@@ -242,10 +298,69 @@ export function createRoom(buildingId, value, ownerId) {
     .get(buildingId, name)) {
     throw new Error('A room with that name already exists in this building');
   }
-  const room = { id: crypto.randomUUID(), buildingId, name };
-  db.prepare('INSERT INTO rooms (id, building_id, name, created_at) VALUES (?, ?, ?, ?)')
-    .run(room.id, room.buildingId, room.name, new Date().toISOString());
+  const count = db.prepare('SELECT COUNT(*) AS total FROM rooms WHERE building_id = ?').get(buildingId).total;
+  const slot = roomLayouts(count + 1)[count] || { x: 6, y: 20, w: 28, h: 24 };
+  const room = { id: crypto.randomUUID(), buildingId, name, ...slot };
+  db.prepare(`INSERT INTO rooms (id, building_id, name, created_at, x, y, w, h)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(room.id, room.buildingId, room.name, new Date().toISOString(), room.x, room.y, room.w, room.h);
   return room;
+}
+
+// Save a room's position or size on the floor plan. Coordinates stay inside
+// the building outline, and ownership is checked through the parent building.
+export function updateRoomLayout(roomId, ownerId, layout = {}) {
+  const current = db.prepare(`SELECT x, y, w, h FROM rooms WHERE id = ?
+    AND building_id IN (SELECT id FROM buildings WHERE owner_id = ?)`).get(roomId, ownerId);
+  if (!current) return null;
+  const x = clamp(layout.x ?? current.x, 0, 92, Number(current.x) || 6);
+  const y = clamp(layout.y ?? current.y, 0, 90, Number(current.y) || 12);
+  const w = clamp(layout.w ?? current.w, 8, 100 - x, Number(current.w) || 28);
+  const h = clamp(layout.h ?? current.h, 10, 100 - y, Number(current.h) || 24);
+  const result = db.prepare(`UPDATE rooms SET x = ?, y = ?, w = ?, h = ? WHERE id = ?`)
+    .run(x, y, w, h, roomId);
+  return result.changes ? { x, y, w, h } : null;
+}
+
+export function renameBuilding(buildingId, ownerId, value) {
+  if (!ownsBuilding(buildingId, ownerId)) return null;
+  const name = placementName(value, 'Building');
+  if (db.prepare(`SELECT 1 FROM buildings WHERE owner_id = ? AND name COLLATE NOCASE = ? AND id <> ?`)
+    .get(ownerId, name, buildingId)) {
+    throw new Error('A building with that name already exists');
+  }
+  db.prepare('UPDATE buildings SET name = ? WHERE id = ?').run(name, buildingId);
+  return { id: buildingId, name };
+}
+
+function ownedRoom(roomId, ownerId) {
+  return db.prepare(`SELECT r.id, r.building_id AS buildingId FROM rooms r
+    WHERE r.id = ? AND r.building_id IN (SELECT id FROM buildings WHERE owner_id = ?)`)
+    .get(roomId, ownerId) || null;
+}
+
+export function renameRoom(roomId, ownerId, value) {
+  const room = ownedRoom(roomId, ownerId);
+  if (!room) return null;
+  const name = placementName(value, 'Room');
+  if (db.prepare(`SELECT 1 FROM rooms WHERE building_id = ? AND name COLLATE NOCASE = ? AND id <> ?`)
+    .get(room.buildingId, name, roomId)) {
+    throw new Error('A room with that name already exists in this building');
+  }
+  db.prepare('UPDATE rooms SET name = ? WHERE id = ?').run(name, roomId);
+  return { id: roomId, buildingId: room.buildingId, name };
+}
+
+export function deleteRoom(roomId, ownerId) {
+  const room = ownedRoom(roomId, ownerId);
+  if (!room) return null;
+  const cameras = db.prepare('SELECT COUNT(*) AS total FROM camera_placements WHERE room_id = ?')
+    .get(roomId).total;
+  if (cameras) {
+    throw new Error(`Delete the ${cameras} camera${cameras === 1 ? '' : 's'} in this room first`);
+  }
+  db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+  return { id: roomId };
 }
 
 // Resolve the camera form's placement. Inline "new building" and "new room"

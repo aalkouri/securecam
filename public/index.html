@@ -9,6 +9,10 @@
 <body>
   <header>
     <div class="brand"><span class="brand-dot"></span>SecureCam</div>
+    <div class="account-switcher hidden" id="account-switcher">
+      <label for="account-select">Viewing account</label>
+      <select id="account-select" aria-label="Select account to view"></select>
+    </div>
     <div class="actions">
       <button id="archive-btn" title="Browse archived alert clips">Archives</button>
       <div class="alerts-wrap" id="alerts-wrap">
@@ -37,6 +41,42 @@
   </header>
 
   <main>
+    <!-- The admin lands here. No cameras or floor plan until an account is
+         chosen; after that the page is the ordinary customer dashboard. -->
+    <section class="admin-picker panel hidden" id="admin-picker" aria-labelledby="admin-picker-title">
+      <div class="admin-picker-icon" aria-hidden="true">👥</div>
+      <h1 id="admin-picker-title">Choose an account to view</h1>
+      <p>Select the account you want to connect to. SecureCam will show that
+        account’s floor plan, cameras, detections and alerts exactly as its owner sees them.</p>
+      <label for="admin-picker-select">Account</label>
+      <select id="admin-picker-select" aria-label="Account to view"></select>
+      <button type="button" class="primary" id="admin-picker-open">Open account</button>
+    </section>
+
+    <!-- Interactive building layout. Rooms are draggable, and each room can
+         spawn a camera form already scoped to its building. -->
+    <section class="floorplan panel" id="floorplan" aria-labelledby="floorplan-title">
+      <div class="floorplan-head">
+        <div>
+          <h2 id="floorplan-title">Building layout</h2>
+          <p class="hint">Drag a room to move it, drag its bottom-right corner to resize, or click a title to rename.
+            Use <strong>+ camera</strong> to place a camera in that room.</p>
+        </div>
+        <div class="floorplan-controls">
+          <label for="floorplan-building">Building</label>
+          <select id="floorplan-building" aria-label="Select building"></select>
+          <button type="button" id="floorplan-add-room">+ Room</button>
+        </div>
+      </div>
+      <div class="floorplan-board" id="floorplan-board">
+        <div class="floorplan-building" id="floorplan-outline">
+          <button type="button" class="floorplan-building-name" id="floorplan-outline-name" title="Rename building"></button>
+          <div class="floorplan-rooms" id="floorplan-rooms"></div>
+          <p class="floorplan-empty hidden" id="floorplan-empty">No rooms in this building yet. Add a room to start your layout.</p>
+        </div>
+      </div>
+    </section>
+
     <div class="empty hidden" id="empty">
       <h2>No cameras yet</h2>
       <p>Add your first camera. For Reolink cameras you only need the IP address and login.<br>
@@ -233,6 +273,62 @@
       </div>
     </form>
   </dialog>
+
+  <dialog id="room-dialog">
+    <form method="dialog" id="room-form">
+      <h2>Add a room</h2>
+      <p class="hint" id="room-dialog-building"></p>
+      <label for="room-name">Room name</label>
+      <input type="text" id="room-name" placeholder="Front door, Driveway, Lobby…" maxlength="100" required>
+      <div class="error" id="room-error" role="alert"></div>
+      <div class="row">
+        <div class="right">
+          <button type="button" id="room-cancel">Cancel</button>
+          <button type="submit" class="primary">Add room</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="rename-dialog">
+    <form method="dialog" id="rename-form">
+      <h2 id="rename-title">Rename</h2>
+      <label for="rename-input" id="rename-label">Name</label>
+      <input type="text" id="rename-input" maxlength="100" required>
+      <div class="error" id="rename-error" role="alert"></div>
+      <div class="row">
+        <div class="right">
+          <button type="button" id="rename-cancel">Cancel</button>
+          <button type="submit" class="primary">Save</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="notice-dialog" aria-labelledby="notice-text">
+    <p id="notice-text"></p>
+    <div class="row">
+      <div class="right">
+        <button type="button" id="notice-cancel" class="hidden">Cancel</button>
+        <button type="button" id="notice-ok" class="primary">OK</button>
+      </div>
+    </div>
+  </dialog>
+
+  <template id="room-template">
+    <div class="plan-room" role="group" tabindex="0">
+      <div class="plan-room-head">
+        <button type="button" class="plan-room-name" title="Rename room"></button>
+        <span class="plan-room-tools">
+          <span class="plan-grip" aria-hidden="true">⠿</span>
+          <button type="button" class="plan-room-close" title="Delete room" aria-label="Delete room">✕</button>
+        </span>
+      </div>
+      <span class="plan-count"></span>
+      <button type="button" class="plan-add-cam">+ camera</button>
+      <div class="plan-resize" role="separator" aria-label="Resize room" tabindex="0" title="Drag to resize"></div>
+    </div>
+  </template>
 
   <template id="tile-template">
     <div class="tile">

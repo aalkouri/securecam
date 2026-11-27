@@ -70,11 +70,24 @@ setInterval(() => {
   for (const key of [...buckets.keys()]) bucket(key);
 }, WINDOW_MS).unref();
 
-// Puts the signed-in account on req.user, or turns the request away.
+// Puts the signed-in account on req.actualUser. An admin may temporarily view
+// another account; req.user is then the account whose data the page sees.
 export function requireAuth(req, res, next) {
   const user = req.session?.uid ? getUser(req.session.uid) : null;
   if (user) {
+    req.actualUser = user;
     req.user = user;
+    if (user.role === 'admin' && req.session?.viewAs) {
+      const viewed = getUser(req.session.viewAs);
+      if (viewed) {
+        req.user = viewed;
+        req.viewingId = viewed.id;
+      } else {
+        delete req.session.viewAs;
+      }
+    } else if (req.session?.viewAs) {
+      delete req.session.viewAs;
+    }
     return next();
   }
   if (req.path.startsWith('/api/') || req.path.startsWith('/streams/')) {
@@ -83,7 +96,9 @@ export function requireAuth(req, res, next) {
   return res.redirect('/login');
 }
 
+// Admin rights always belong to the signed-in account, never to the account
+// currently being viewed.
 export function requireAdmin(req, res, next) {
-  if (req.user?.role === 'admin') return next();
+  if (req.actualUser?.role === 'admin') return next();
   res.status(403).json({ error: 'Only the admin account can change this' });
 }
