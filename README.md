@@ -71,8 +71,10 @@ counts objects that have crossed that threshold.
 
 People are saved as **face shots only**: a person is skipped unless a face is
 clearly visible, and identity comes from a 512-dimensional face embedding, not
-clothing. Vehicles keep their body snapshot. The Detections page has separate
-**Objects to name**, **People**, **Vehicles** and **Animals** buttons so you can
+clothing. Vehicles keep their body snapshot. Identical frames are stored once,
+named by their SHA-256, so looping test footage cannot fill the folder with
+duplicate JPEGs; unused files are cleaned up on startup. The Detections page has
+separate **Objects to name**, **People**, **Vehicles** and **Animals** buttons so you can
 work through one group at a time. The page loads once when opened — it never
 refreshes itself while you are typing. Type a name and press **Confirm** to save
 it; **View Sightings** jumps to that object's history, and the **×** on the photo

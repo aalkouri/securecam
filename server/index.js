@@ -15,7 +15,7 @@ import { detection } from './detection.js';
 import { ALERT_CLIP_DIR } from './clips.js';
 import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
-  listSightings, listAlerts, getAlert, ackAlerts, closeDatabase,
+  listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots, closeDatabase,
 } from './database.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -294,6 +294,10 @@ app.get('/api/snapshots/:file', (req, res) => {
 });
 
 // ---------- boot ----------
+const snapshotCleanup = cleanupSnapshots();
+if (snapshotCleanup.deduped || snapshotCleanup.orphans) {
+  console.log(`Snapshots: removed ${snapshotCleanup.deduped} duplicates and ${snapshotCleanup.orphans} unused files`);
+}
 for (const cam of getCameras()) if (cam.enabled) streams.startCamera(cam);
 detection.start();
 

@@ -1,6 +1,7 @@
 // SQLite storage for detected objects, sightings and alerts.
 // Uses the built-in node:sqlite driver — no native module to install.
 import { DatabaseSync } from 'node:sqlite';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { DATA_DIR } from './store.js';
@@ -148,6 +149,72 @@ export function getObject(id) {
   return objectRow(db.prepare(`SELECT ${LATEST} FROM objects o WHERE o.id = ?`).get(id));
 }
 
+// Store each distinct frame once, named by its SHA-256. Looping test videos
+// produce the same frame many times; without this every repeat sighting would
+// write another identical JPEG.
+export function saveSnapshot(buffer) {
+  fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
+  const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+  const name = `${hash}.jpg`;
+  if (!fs.existsSync(path.join(SNAPSHOT_DIR, name))) {
+    fs.writeFileSync(path.join(SNAPSHOT_DIR, name), buffer);
+  }
+  return name;
+}
+
+// A discarded sighting must not delete a file that another sighting now shares.
+export function removeSnapshotIfUnreferenced(name) {
+  if (!/^[\w-]+\.jpg$/i.test(name)) return;
+  if (db.prepare('SELECT 1 FROM sightings WHERE snapshot = ? LIMIT 1').get(name)) return;
+  try { fs.unlinkSync(path.join(SNAPSHOT_DIR, name)); } catch { /* already gone */ }
+}
+
+// Fold older UUID-named duplicates into one hash-named file per image, repoint
+// the sightings that used them, then remove files no sighting references.
+export function cleanupSnapshots() {
+  fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
+  const groups = new Map();
+  for (const name of fs.readdirSync(SNAPSHOT_DIR)) {
+    if (!/^[\w-]+\.jpg$/i.test(name)) continue;
+    const file = path.join(SNAPSHOT_DIR, name);
+    let stat;
+    try { stat = fs.statSync(file); } catch { continue; }
+    if (!stat.isFile() || !stat.size) continue;
+    const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    if (!groups.has(hash)) groups.set(hash, []);
+    groups.get(hash).push(name);
+  }
+
+  const repoint = db.prepare('UPDATE sightings SET snapshot = ? WHERE snapshot = ?');
+  let deduped = 0;
+  for (const [hash, names] of groups) {
+    const canonical = `${hash}.jpg`;
+    let keep = canonical;
+    if (!names.includes(canonical)) {
+      keep = [...names].sort((a, b) => a.localeCompare(b))[0];
+      try {
+        fs.renameSync(path.join(SNAPSHOT_DIR, keep), path.join(SNAPSHOT_DIR, canonical));
+      } catch { continue; }
+    }
+    for (const name of names) {
+      if (name === keep) continue;
+      repoint.run(canonical, name);
+      fs.rmSync(path.join(SNAPSHOT_DIR, name), { force: true });
+      deduped += 1;
+    }
+  }
+
+  const referenced = new Set(db.prepare('SELECT DISTINCT snapshot FROM sightings').all()
+    .map((row) => row.snapshot));
+  let orphans = 0;
+  for (const name of fs.readdirSync(SNAPSHOT_DIR)) {
+    if (!/^[\w-]+\.jpg$/i.test(name) || referenced.has(name)) continue;
+    fs.rmSync(path.join(SNAPSHOT_DIR, name), { force: true });
+    orphans += 1;
+  }
+  return { deduped, orphans };
+}
+
 // Score a stored object against a new detection. ReID embeddings are primary;
 // a perceptual hash is the fallback when an embedding isn't available.
 function scoreRow(row, kind, embedding, fingerprint) {
@@ -257,15 +324,18 @@ export function renameObject(id, name) {
 }
 
 // Removing an object also removes its sightings and alerts (FK cascade).
-// Return the snapshot names so the caller can delete the files.
+// Only return files no other sighting still references — snapshots are shared
+// when two sightings captured the identical frame.
 export function deleteObject(id) {
-  const snapshots = db.prepare('SELECT snapshot FROM sightings WHERE object_id = ?').all(id)
-    .map((row) => row.snapshot);
+  const candidates = [...new Set(db.prepare('SELECT snapshot FROM sightings WHERE object_id = ?').all(id)
+    .map((row) => row.snapshot))];
   const clips = db.prepare('SELECT clip FROM alerts WHERE object_id = ? AND clip IS NOT NULL').all(id)
     .map((row) => row.clip);
   const result = db.prepare('DELETE FROM objects WHERE id = ?').run(id);
   if (!result.changes) throw new Error('Object not found');
-  return { snapshots, clips };
+  const stillUsed = new Set(db.prepare('SELECT DISTINCT snapshot FROM sightings').all()
+    .map((row) => row.snapshot));
+  return { snapshots: candidates.filter((name) => !stillUsed.has(name)), clips };
 }
 
 export function updateObjectSignature(id, embedding, fingerprint, seenAt) {

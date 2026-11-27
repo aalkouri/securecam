@@ -1,15 +1,14 @@
 // Periodically grabs one frame from each enabled camera, runs local object
 // detection, and writes sightings/alerts to SQLite.
 import { spawn } from 'node:child_process';
-import crypto from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import { getCameras } from './store.js';
 import { gridUrl, isClip, clipPath } from './cameras.js';
 import { detect, loadModels, modelStatus } from './detector.js';
 import {
-  SNAPSHOT_DIR, MIN_SIGHTINGS, getSetting, setSetting, findMatch, findReviewCandidate,
-  createObject, updateObjectSignature, recordSighting, setAlertClip, counts,
+  MIN_SIGHTINGS, getSetting, setSetting, findMatch, findReviewCandidate,
+  createObject, updateObjectSignature, recordSighting, saveSnapshot,
+  removeSnapshotIfUnreferenced, setAlertClip, counts,
 } from './database.js';
 import { ALERT_CLIP_DIR, recordAlertClip } from './clips.js';
 
@@ -154,7 +153,6 @@ class DetectionLoop {
     const previouslyPresent = this.present;
     const nowPresent = new Set();
     try {
-      fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
       const gap = getSetting('detection.sightingGapMs', 60_000);
       const cooldown = getSetting('detection.alertCooldownMs', 300_000);
       for (const camera of getCameras().filter((c) => c.enabled)) {
@@ -192,8 +190,7 @@ class DetectionLoop {
     const wasPresent = previouslyPresent.has(key);
     nowPresent.add(key);
 
-    const snapshot = `${crypto.randomUUID()}.jpg`;
-    fs.writeFileSync(path.join(SNAPSHOT_DIR, snapshot), item.snapshot);
+    const snapshot = saveSnapshot(item.snapshot);
     const result = recordSighting({
       object, camera: { id: camera.id, name: camera.name },
       confidence: item.confidence,
@@ -205,8 +202,8 @@ class DetectionLoop {
       wasPresent,
     });
     if (!result.sighting) {
-      // No sighting was kept, so don't leave an unused snapshot behind.
-      fs.unlinkSync(path.join(SNAPSHOT_DIR, snapshot));
+      // No sighting was kept. Drop the file only if no other sighting shares it.
+      removeSnapshotIfUnreferenced(snapshot);
     }
     if (result.alert) {
       const clip = `${result.alert.id}.mp4`;
