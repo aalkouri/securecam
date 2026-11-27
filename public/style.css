@@ -181,6 +181,7 @@ body.admin-picking #alerts { display: none !important; }
 .resize-icon {
   width: 14px; height: 14px; fill: none; stroke: currentColor;
   stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  transform: scaleX(-1);
 }
 .floorplan-rooms { position: absolute; inset: 0; }
 .floorplan-empty {
