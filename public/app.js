@@ -1,6 +1,7 @@
 /* global Hls */
 const grid = document.getElementById('grid');
 const empty = document.getElementById('empty');
+const feedHint = document.getElementById('feed-hint');
 const tpl = document.getElementById('tile-template');
 const dialog = document.getElementById('cam-dialog');
 const camForm = document.getElementById('cam-form');
@@ -53,8 +54,13 @@ function suggestedCameraName(roomName) {
 
 const tiles = new Map(); // id -> { el, player, camera }
 let editingId = null;
+let dialogPlacement = null;
 let buildings = [];
 let cameras = [];
+let selectedCameraId = '';
+// The feed is remembered per viewed account so an admin switching between
+// customers does not inherit someone else's last-viewed camera.
+const feedKey = () => `securecam.feed.${accountState?.viewingId ?? 'current'}`;
 
 // Admin account switching.
 const accountSwitcher = document.getElementById('account-switcher');
@@ -65,10 +71,17 @@ let accountState = null;
 
 // Floor-plan editor state.
 const planSelect = document.getElementById('floorplan-building');
+const planBoard = document.getElementById('floorplan-board');
+const planOutline = document.getElementById('floorplan-outline');
 const planOutlineName = document.getElementById('floorplan-outline-name');
+const planOutlineResize = document.getElementById('floorplan-building-resize');
 const planRoomsEl = document.getElementById('floorplan-rooms');
+const planOutsideAdd = document.getElementById('floorplan-add-outside');
+const planOutsideLabel = document.getElementById('floorplan-outside-label');
+const planOutsideMarkers = document.getElementById('floorplan-outside-markers');
 const planEmpty = document.getElementById('floorplan-empty');
 const roomTpl = document.getElementById('room-template');
+const cameraMarkerTpl = document.getElementById('camera-marker-template');
 const roomDialog = document.getElementById('room-dialog');
 const roomForm = document.getElementById('room-form');
 const roomError = document.getElementById('room-error');
@@ -84,6 +97,9 @@ const noticeOk = document.getElementById('notice-ok');
 let cameraCounts = new Map();
 let activeRoomDrag = null;
 let activeRoomResize = null;
+let activeCameraDrag = null;
+let activeBuildingResize = null;
+const planCameraEls = new Map(); // camera id -> floor-plan marker
 let renameTarget = null;
 let noticeResolver = null;
 
@@ -189,25 +205,69 @@ function renderStatus(tile) {
   }
 }
 
+function cameraLocation(camera) {
+  const room = camera.outside ? 'Outside' : (camera.roomName || 'Unassigned');
+  return `${camera.buildingName || 'Unassigned'} / ${room}`;
+}
+
 function createTile(camera) {
   const el = tpl.content.firstElementChild.cloneNode(true);
   const tile = { el, camera, player: null };
   el.querySelector('.name').textContent = camera.name;
-  el.querySelector('.location').textContent = `${camera.buildingName || 'Unassigned'} / ${camera.roomName || 'Unassigned'}`;
+  el.querySelector('.location').textContent = cameraLocation(camera);
   el.querySelector('.video-box').addEventListener('click', () => openFocus(tile.camera));
   el.querySelector('.tools').addEventListener('click', async (e) => {
     const action = e.target.closest('button')?.dataset.action;
     if (action === 'edit') openDialog(tile.camera);
     if (action === 'open') openFocus(tile.camera);
-    if (action === 'restart') {
-      el.dataset.state = '';
-      tile.camera = await api(`/api/cameras/${tile.camera.id}/restart`, { method: 'POST' });
-      renderStatus(tile);
-    }
   });
   grid.appendChild(el);
   tiles.set(camera.id, tile);
   return tile;
+}
+
+function removeTile(id) {
+  const tile = tiles.get(id);
+  if (!tile) return;
+  clearTimeout(tile.selectTimer);
+  tile.player?.();
+  tile.el.remove();
+  tiles.delete(id);
+}
+
+function updateFeedHint() {
+  if (!feedHint) return;
+  const camera = cameras.find((c) => c.id === selectedCameraId);
+  feedHint.textContent = camera
+    ? `Showing ${camera.name}. Click a camera below to change the feed.`
+    : 'Click a camera below to show its feed here.';
+}
+
+// Only one tile is mounted at a time. Clicking a floor-plan marker replaces the
+// feed with that camera and remembers the choice for the next visit.
+function selectCamera(id) {
+  const camera = cameras.find((c) => c.id === id);
+  if (!camera) return;
+  selectedCameraId = id;
+  localStorage.setItem(feedKey(), id);
+  for (const otherId of [...tiles.keys()]) {
+    if (otherId !== id) removeTile(otherId);
+  }
+  const tile = tiles.get(id) || createTile(camera);
+  tile.camera = camera;
+  tile.el.querySelector('.name').textContent = camera.name;
+  tile.el.querySelector('.location').textContent = cameraLocation(camera);
+  renderStatus(tile);
+  grid.prepend(tile.el);
+  tile.el.classList.remove('selected');
+  void tile.el.offsetWidth; // restart the flash animation on repeated clicks
+  tile.el.classList.add('selected');
+  clearTimeout(tile.selectTimer);
+  tile.selectTimer = setTimeout(() => tile.el.classList.remove('selected'), 1600);
+  updateFeedHint();
+  renderFloorplanCameras();
+  const top = grid.getBoundingClientRect().top + window.scrollY - 72;
+  window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
 }
 
 // A camera's stream config changed; the tile must reconnect.
@@ -222,29 +282,31 @@ async function refresh() {
     return;
   }
   empty.classList.toggle('hidden', cameras.length > 0);
+  feedHint?.classList.toggle('hidden', cameras.length === 0);
   cameraCounts = new Map();
   for (const camera of cameras) {
     if (!camera.buildingId || !camera.roomId) continue;
     cameraCounts.set(camera.roomId, (cameraCounts.get(camera.roomId) || 0) + 1);
   }
   updateFloorplanCounts();
-  const seen = new Set();
+  if (!cameras.some((camera) => camera.id === selectedCameraId)) {
+    selectedCameraId = cameras[0]?.id || '';
+    if (selectedCameraId) localStorage.setItem(feedKey(), selectedCameraId);
+  }
+  for (const [id] of tiles) {
+    if (id !== selectedCameraId) removeTile(id);
+  }
   for (const camera of cameras) {
-    seen.add(camera.id);
+    if (camera.id !== selectedCameraId) continue;
     const tile = tiles.get(camera.id) || createTile(camera);
     if (configKey(tile.camera) !== configKey(camera)) tile.el.dataset.state = '';
     tile.camera = camera;
     tile.el.querySelector('.name').textContent = camera.name;
-    tile.el.querySelector('.location').textContent = `${camera.buildingName || 'Unassigned'} / ${camera.roomName || 'Unassigned'}`;
+    tile.el.querySelector('.location').textContent = cameraLocation(camera);
     renderStatus(tile);
   }
-  for (const [id, tile] of tiles) {
-    if (!seen.has(id)) {
-      tile.player?.();
-      tile.el.remove();
-      tiles.delete(id);
-    }
-  }
+  updateFeedHint();
+  renderFloorplanCameras();
 }
 
 // ---------- focus (single camera) view ----------
@@ -361,34 +423,13 @@ document.addEventListener('keydown', (e) => {
 const field = (id) => document.getElementById(id);
 
 // ---------- first-run setup guide ----------
-// Accounts can be created without any building. Until one exists, the guide
-// owns the screen: create a building, then a room, then the first camera.
-const onboardingState = { active: false, step: 1, building: null, room: null };
+// Accounts can be created without any building. Until one exists, this guide
+// owns the screen: name a building, then a room. Finishing reveals the main
+// screen with that building and room already selected on the floor plan.
+const onboardingState = { active: false, step: 1, building: null };
 const onboardingEl = document.getElementById('onboarding');
 const onboardingError = document.getElementById('onboarding-error');
 const onboardingNext = document.getElementById('onboarding-next');
-const cameraSlot = document.getElementById('onboarding-camera-slot');
-
-const ONBOARDING_STEPS = {
-  1: {
-    icon: '🏢',
-    title: 'Let’s add your first building',
-    copy: 'A building is the property or site where your cameras will live. Name it something you’ll recognise later.',
-    button: 'Create building',
-  },
-  2: {
-    icon: '🚪',
-    title: 'Now add a room',
-    copy: 'Rooms keep cameras organised. Tell us which part of your building this first camera will watch.',
-    button: 'Create room',
-  },
-  3: {
-    icon: '📷',
-    title: 'Add your first camera',
-    copy: 'Last step. Your building and room are already filled in — just name the camera and choose its feed.',
-    button: 'Add camera',
-  },
-};
 
 function setBehindInert(inert) {
   // Make every screen element outside the guide unreachable by mouse or
@@ -399,29 +440,11 @@ function setBehindInert(inert) {
   }
 }
 
-function placeSummary(building, room) {
-  return `<span>🏢 ${esc(building.name)}</span><span class="sep">›</span><span>🚪 ${esc(room.name)}</span>`;
-}
-
 function renderOnboarding() {
-  const step = onboardingState.step;
-  const info = ONBOARDING_STEPS[step];
-  field('onboarding-hero-icon').textContent = info.icon;
-  field('onboarding-progress-text').textContent = `Step ${step} of 3`;
-  field('onboarding-title').textContent = info.title;
-  field('onboarding-copy').textContent = info.copy;
-  onboardingNext.textContent = info.button;
+  onboardingNext.textContent = onboardingState.step === 1 ? 'Next' : 'Finish';
   onboardingError.textContent = '';
-
-  for (const el of document.querySelectorAll('.onboard-step')) {
-    const n = Number(el.dataset.step);
-    el.classList.toggle('active', n === step);
-    el.classList.toggle('done', n < step);
-  }
-  for (let n = 1; n <= 3; n += 1) {
-    field(`onboarding-step-${n}`).classList.toggle('hidden', n !== step);
-  }
-  field('onboarding-actions').classList.toggle('hidden', step === 3);
+  field('onboarding-step-1').classList.toggle('hidden', onboardingState.step !== 1);
+  field('onboarding-step-2').classList.toggle('hidden', onboardingState.step !== 2);
 }
 
 function startOnboarding() {
@@ -429,7 +452,6 @@ function startOnboarding() {
   onboardingState.active = true;
   onboardingState.step = 1;
   onboardingState.building = null;
-  onboardingState.room = null;
   field('onboarding-building-name').value = '';
   field('onboarding-room-name').value = '';
   renderOnboarding();
@@ -439,62 +461,16 @@ function startOnboarding() {
   field('onboarding-building-name').focus();
 }
 
-// The camera form normally lives inside #cam-dialog. During setup it moves
-// into the guide so the whole flow looks and behaves like one screen.
-function restoreCameraForm() {
-  if (cameraSlot.contains(camForm)) dialog.appendChild(camForm);
-  field('cam-placement-summary').classList.add('hidden');
-  field('cam-placement-summary').textContent = '';
-  field('cam-building').closest('.placement-row').classList.remove('hidden');
-  field('cam-cancel').classList.remove('hidden');
-  field('cam-delete').classList.remove('hidden');
-  field('dialog-title').classList.remove('hidden');
-  field('cam-submit').textContent = 'Save';
-}
-
-async function prepareCameraStep() {
-  await loadPlacements();
-  restoreCameraForm();
-  cameraSlot.appendChild(camForm);
-  editingId = null;
-  camError.textContent = '';
-  testResult.classList.add('hidden');
-  field('cam-placement-summary').innerHTML = placeSummary(onboardingState.building, onboardingState.room);
-  field('cam-placement-summary').classList.remove('hidden');
-  field('cam-building').closest('.placement-row').classList.add('hidden');
-  field('cam-cancel').classList.add('hidden');
-  field('cam-delete').classList.add('hidden');
-  field('dialog-title').classList.add('hidden');
-  field('cam-submit').textContent = 'Add camera';
-  field('onboarding-room-summary').innerHTML = placeSummary(onboardingState.building, onboardingState.room);
-
-  field('cam-building').value = onboardingState.building.id;
-  setRoomOptions(onboardingState.building.id, onboardingState.room.id);
-  field('cam-name').value = suggestedCameraName(onboardingState.room.name);
-  field('cam-type').value = 'reolink';
-  field('cam-host').value = '';
-  field('cam-port').value = '';
-  field('cam-username').value = 'admin';
-  field('cam-password').value = '';
-  field('cam-password').placeholder = '';
-  field('cam-url').value = '';
-  field('cam-sample').value = '';
-  field('cam-enabled').checked = true;
-  showTypeFields();
-}
-
 function finishOnboarding() {
-  restoreCameraForm();
   onboardingState.active = false;
   onboardingState.building = null;
-  onboardingState.room = null;
   onboardingEl.classList.add('hidden');
   document.body.classList.remove('no-scroll');
   setBehindInert(false);
 }
 
 async function advanceOnboarding() {
-  if (!onboardingState.active || onboardingState.step === 3) return;
+  if (!onboardingState.active) return;
   onboardingError.textContent = '';
   onboardingNext.disabled = true;
   try {
@@ -504,7 +480,6 @@ async function advanceOnboarding() {
       if (!validPlainName(name)) throw new Error('Use letters, numbers, spaces and hyphens only.');
       const building = await api('/api/buildings', { method: 'POST', body: JSON.stringify({ name }) });
       onboardingState.building = building;
-      field('onboarding-building-summary').innerHTML = `<span>🏢 ${esc(building.name)}</span>`;
       onboardingState.step = 2;
       field('onboarding-room-name').value = '';
       renderOnboarding();
@@ -513,21 +488,21 @@ async function advanceOnboarding() {
       const name = field('onboarding-room-name').value.trim();
       if (!name) throw new Error('Enter a room name to continue.');
       if (!validPlainName(name)) throw new Error('Use letters, numbers, spaces and hyphens only.');
-      const room = await api(`/api/buildings/${onboardingState.building.id}/rooms`, {
+      await api(`/api/buildings/${onboardingState.building.id}/rooms`, {
         method: 'POST', body: JSON.stringify({ name }),
       });
-      onboardingState.room = room;
-      onboardingState.step = 3;
-      await prepareCameraStep();
-      renderOnboarding();
-      field('cam-name').focus();
+      // Select the new building before refreshing so the main screen opens
+      // on the building and room that were just created.
+      localStorage.setItem('securecam.building', onboardingState.building.id);
+      await loadPlacements();
+      finishOnboarding();
+      return;
     }
   } catch (err) {
     onboardingError.textContent = err.message;
+  } finally {
     onboardingNext.disabled = false;
-    return;
   }
-  onboardingNext.disabled = false;
 }
 
 onboardingNext.addEventListener('click', () => { advanceOnboarding(); });
@@ -582,13 +557,17 @@ function setRoomOptions(buildingId, selectedId = '') {
 }
 
 function updatePlacementFields() {
-  const creatingBuilding = field('cam-building').value === '__new__';
-  const creatingRoom = creatingBuilding || field('cam-room').value === '__new__';
+  const fixed = Boolean(dialogPlacement?.fixed);
+  const creatingBuilding = !fixed && field('cam-building').value === '__new__';
+  const creatingRoom = !fixed && (creatingBuilding || field('cam-room').value === '__new__');
+  field('cam-placement-fields').classList.toggle('hidden', fixed);
+  field('cam-building').disabled = fixed;
+  field('cam-building').required = !fixed;
   field('cam-new-building').classList.toggle('hidden', !creatingBuilding);
   field('cam-new-building').required = creatingBuilding;
   field('room-select-field').classList.toggle('placeholder', creatingBuilding);
-  field('cam-room').disabled = creatingBuilding;
-  field('cam-room').required = !creatingBuilding;
+  field('cam-room').disabled = fixed || creatingBuilding;
+  field('cam-room').required = !fixed && !creatingBuilding;
   field('cam-new-room').classList.toggle('hidden', !creatingRoom);
   field('cam-new-room').required = creatingRoom;
 }
@@ -690,15 +669,390 @@ function renderFloorplan() {
   const chosen = buildings.some((building) => building.id === wanted) ? wanted : (buildings[0]?.id || '');
   planSelect.value = chosen;
   if (chosen) localStorage.setItem('securecam.building', chosen);
-  planOutlineName.textContent = currentPlanBuilding()?.name || '';
+  const building = currentPlanBuilding();
+  planOutlineName.textContent = building?.name || '';
   planOutlineName.title = planOutlineName.textContent ? `Rename ${planOutlineName.textContent}` : 'Rename building';
+  planOutline.style.setProperty('--right', building?.planRight ?? 3);
+  planOutline.style.setProperty('--bottom', building?.planBottom ?? 3);
   renderFloorplanRooms();
+  renderFloorplanCameras();
 }
 
 function updateFloorplanCounts() {
   for (const el of planRoomsEl.querySelectorAll('.plan-room')) {
     el.querySelector('.plan-count').textContent = cameraCountText(el.dataset.roomId);
   }
+  const building = currentPlanBuilding();
+  const outside = cameras.filter((c) => c.outside && c.buildingId === building?.id).length;
+  planOutsideAdd.title = outside
+    ? `${outside} camera${outside === 1 ? '' : 's'} outside the building`
+    : 'Add a camera to the area outside the building';
+}
+
+// A room must leave every camera marker inside it clear. Returning false
+// blocks the drag/resize and the saved layout is left untouched.
+function roomFitsCameras(el, layout) {
+  const original = el.getAttribute('style');
+  setRoomVars(el, layout);
+  const ok = [...el.querySelectorAll('.plan-camera')].every((marker) => {
+    const room = el.getBoundingClientRect();
+    const box = marker.getBoundingClientRect();
+    return box.left >= room.left && box.right <= room.right
+      && box.top >= room.top && box.bottom <= room.bottom;
+  });
+  if (!ok && original !== null) el.setAttribute('style', original);
+  return ok;
+}
+
+// The black outline may grow around its rooms, but it can never shrink across
+// a room or inside camera, cover an outside camera, or cover the outside button.
+function buildingFitsContents(right, bottom) {
+  const original = planOutline.getAttribute('style');
+  planOutline.style.setProperty('--right', right);
+  planOutline.style.setProperty('--bottom', bottom);
+  const box = planOutline.getBoundingClientRect();
+  const contains = (other) => other.left >= box.left && other.right <= box.right
+    && other.top >= box.top && other.bottom <= box.bottom;
+  let ok = true;
+  for (const el of planRoomsEl.querySelectorAll('.plan-room')) {
+    if (!contains(el.getBoundingClientRect())) { ok = false; break; }
+  }
+  if (ok) {
+    for (const el of planCameraEls.values()) {
+      if (!el.isConnected) continue;
+      const other = el.getBoundingClientRect();
+      if (el.parentElement === planOutsideMarkers) {
+        if (rectsOverlap(box, other, 0)) { ok = false; break; }
+      } else if (!contains(other)) {
+        ok = false;
+        break;
+      }
+    }
+  }
+  if (ok && rectsOverlap(box, planOutsideAdd.getBoundingClientRect(), 0)) ok = false;
+  if (ok && rectsOverlap(box, planOutsideLabel.getBoundingClientRect(), 0)) ok = false;
+  if (!ok && original !== null) planOutline.setAttribute('style', original);
+  return ok;
+}
+
+function startBuildingResize(e) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  e.preventDefault();
+  e.stopPropagation();
+  const building = currentPlanBuilding();
+  if (!building) return;
+  const bounds = planBoard.getBoundingClientRect();
+  const origin = {
+    right: Number(building.planRight ?? 3),
+    bottom: Number(building.planBottom ?? 3),
+  };
+  activeBuildingResize = {
+    id: e.pointerId, bounds, origin, current: origin, moved: false,
+  };
+  planOutlineResize.setPointerCapture?.(e.pointerId);
+
+  const onMove = (ev) => {
+    const state = activeBuildingResize;
+    if (!state || ev.pointerId !== state.id) return;
+    const wanted = {
+      right: planPercent(state.origin.right + (ev.clientX - e.clientX) / state.bounds.width * 100, 1, 60),
+      bottom: planPercent(state.origin.bottom + (ev.clientY - e.clientY) / state.bounds.height * 100, 1, 65),
+    };
+    if (!buildingFitsContents(wanted.right, wanted.bottom)) return;
+    state.current = wanted;
+    state.moved = true;
+  };
+
+  const onEnd = (ev) => {
+    const state = activeBuildingResize;
+    if (!state || ev.pointerId !== state.id) return;
+    planOutlineResize.removeEventListener('pointermove', onMove);
+    planOutlineResize.removeEventListener('pointerup', onEnd);
+    planOutlineResize.removeEventListener('pointercancel', onEnd);
+    planOutlineResize.releasePointerCapture?.(ev.pointerId);
+    activeBuildingResize = null;
+    if (state.moved) saveBuildingLayout(building, state.current);
+  };
+
+  planOutlineResize.addEventListener('pointermove', onMove);
+  planOutlineResize.addEventListener('pointerup', onEnd);
+  planOutlineResize.addEventListener('pointercancel', onEnd);
+}
+
+async function saveBuildingLayout(building, layout) {
+  try {
+    const saved = await api(`/api/buildings/${encodeURIComponent(building.id)}/layout`, {
+      method: 'PUT', body: JSON.stringify(layout),
+    });
+    building.planRight = saved.planRight;
+    building.planBottom = saved.planBottom;
+  } catch {
+    await loadPlacements().catch(() => {});
+  }
+}
+
+planOutlineResize.addEventListener('pointerdown', startBuildingResize);
+planOutlineResize.addEventListener('keydown', (e) => {
+  const step = e.shiftKey ? 5 : 1;
+  let dx = 0;
+  let dy = 0;
+  if (e.key === 'ArrowLeft') dx = -step;
+  else if (e.key === 'ArrowRight') dx = step;
+  else if (e.key === 'ArrowUp') dy = -step;
+  else if (e.key === 'ArrowDown') dy = step;
+  else return;
+  e.preventDefault();
+  const building = currentPlanBuilding();
+  if (!building) return;
+  const wanted = {
+    right: planPercent((building.planRight ?? 3) + dx, 1, 60),
+    bottom: planPercent((building.planBottom ?? 3) + dy, 1, 65),
+  };
+  if (!buildingFitsContents(wanted.right, wanted.bottom)) return;
+  saveBuildingLayout(building, wanted);
+});
+
+// ---------- camera markers ----------
+const markerOf = (camera) => camera?.marker || { x: 50, y: 50, rotation: 0 };
+
+function setMarkerVars(el, marker = {}) {
+  el.style.setProperty('--cx', Number(marker.x ?? 50).toFixed(2));
+  el.style.setProperty('--cy', Number(marker.y ?? 50).toFixed(2));
+  el.style.setProperty('--rot', `${Number(marker.rotation ?? 0)}deg`);
+}
+
+function rectsOverlap(a, b, padding = 2) {
+  return !(a.right + padding <= b.left || b.right + padding <= a.left
+    || a.bottom + padding <= b.top || b.bottom + padding <= a.top);
+}
+
+// One marker may not sit on another, and an outside marker may not sit on the
+// outside-camera button. This is the same rule that keeps rooms off the title.
+function markerCollision(el) {
+  const rect = el.getBoundingClientRect();
+  for (const other of planCameraEls.values()) {
+    if (other === el || !other.isConnected) continue;
+    if (rectsOverlap(rect, other.getBoundingClientRect())) return other;
+  }
+  if (el.parentElement === planOutsideMarkers) {
+    if (rectsOverlap(rect, planOutsideAdd.getBoundingClientRect())) return planOutsideAdd;
+    if (rectsOverlap(rect, planOutsideLabel.getBoundingClientRect())) return planOutsideLabel;
+  }
+  return null;
+}
+
+function camerasStillValid() {
+  for (const el of planCameraEls.values()) {
+    if (!el.isConnected) continue;
+    if (markerCollision(el)) return false;
+  }
+  return true;
+}
+
+function clampInsideMarker(el, x, y) {
+  const bounds = el.parentElement.getBoundingClientRect();
+  const padX = Math.min(45, (el.offsetWidth / 2 + 6) / bounds.width * 100);
+  const padY = Math.min(45, (el.offsetHeight / 2 + 6) / bounds.height * 100);
+  return {
+    x: planPercent(x, padX, 100 - padX),
+    y: planPercent(y, padY, 100 - padY),
+  };
+}
+
+function clampOutsideMarker(el, x, y) {
+  const board = planBoard.getBoundingClientRect();
+  const building = planOutline.getBoundingClientRect();
+  const padX = (el.offsetWidth / 2 + 6) / board.width * 100;
+  const padY = (el.offsetHeight / 2 + 6) / board.height * 100;
+  let cx = planPercent(x, padX, 100 - padX);
+  let cy = planPercent(y, padY, 100 - padY);
+  const bx1 = (building.left - board.left) / board.width * 100;
+  const bx2 = (building.right - board.left) / board.width * 100;
+  const by1 = (building.top - board.top) / board.height * 100;
+  const by2 = (building.bottom - board.top) / board.height * 100;
+  if (cx > bx1 - padX && cx < bx2 + padX && cy > by1 - padY && cy < by2 + padY) {
+    const distances = [
+      { side: 'left', value: cx - (bx1 - padX) },
+      { side: 'right', value: (bx2 + padX) - cx },
+      { side: 'top', value: cy - (by1 - padY) },
+      { side: 'bottom', value: (by2 + padY) - cy },
+    ].sort((a, b) => a.value - b.value);
+    const nearest = distances[0];
+    if (nearest.side === 'left') cx = bx1 - padX - 1;
+    if (nearest.side === 'right') cx = bx2 + padX + 1;
+    if (nearest.side === 'top') cy = by1 - padY - 1;
+    if (nearest.side === 'bottom') cy = by2 + padY + 1;
+  }
+  return { x: planPercent(cx, padX, 100 - padX), y: planPercent(cy, padY, 100 - padY) };
+}
+
+async function saveCameraMarker(id, marker) {
+  try {
+    const saved = await api(`/api/cameras/${encodeURIComponent(id)}/marker`, {
+      method: 'PUT', body: JSON.stringify(marker),
+    });
+    const camera = cameras.find((c) => c.id === id);
+    if (camera) camera.marker = saved;
+    return saved;
+  } catch {
+    await loadPlacements().catch(() => {});
+    return null;
+  }
+}
+
+async function rotateCameraMarker(id) {
+  const camera = cameras.find((c) => c.id === id);
+  if (!camera) return;
+  const marker = markerOf(camera);
+  const saved = await saveCameraMarker(id, { ...marker, rotation: (marker.rotation + 45) % 360 });
+  const el = planCameraEls.get(id);
+  if (saved && el) setMarkerVars(el, saved);
+}
+
+function makeCameraMarker(camera) {
+  const el = cameraMarkerTpl.content.firstElementChild.cloneNode(true);
+  el.dataset.cameraId = camera.id;
+  el.querySelector('.plan-camera-name').textContent = camera.name;
+  const rotate = el.querySelector('.plan-camera-rotate');
+  rotate.addEventListener('pointerdown', (e) => e.stopPropagation());
+  rotate.addEventListener('click', (e) => {
+    e.stopPropagation();
+    rotateCameraMarker(camera.id);
+  });
+  el.addEventListener('pointerdown', (e) => startCameraDrag(e, camera.id, el));
+  el.addEventListener('keydown', (e) => handleCameraKeys(e, camera.id, el));
+  return el;
+}
+
+function renderFloorplanCameras() {
+  if (activeCameraDrag || activeBuildingResize) return;
+  const building = currentPlanBuilding();
+  const rooms = [...planRoomsEl.querySelectorAll('.plan-room')];
+  const seen = new Set();
+  for (const camera of cameras) {
+    if (!building || camera.buildingId !== building.id) continue;
+    let parent = planOutsideMarkers;
+    if (!camera.outside) {
+      parent = rooms.find((room) => room.dataset.roomId === camera.roomId);
+      if (!parent) continue;
+    }
+    seen.add(camera.id);
+    let el = planCameraEls.get(camera.id);
+    if (!el) {
+      el = makeCameraMarker(camera);
+      planCameraEls.set(camera.id, el);
+    }
+    if (el.parentElement !== parent) parent.appendChild(el);
+    el.querySelector('.plan-camera-name').textContent = camera.name;
+    el.classList.toggle('active', camera.id === selectedCameraId);
+    setMarkerVars(el, markerOf(camera));
+  }
+  for (const [id, el] of planCameraEls) {
+    if (!seen.has(id)) {
+      el.remove();
+      planCameraEls.delete(id);
+    }
+  }
+}
+
+function startCameraDrag(e, id, el) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  if (e.target.closest('button')) return;
+  e.preventDefault();
+  const camera = cameras.find((c) => c.id === id);
+  if (!camera) return;
+  const outside = el.parentElement === planOutsideMarkers;
+  const marker = markerOf(camera);
+  const drag = {
+    id: e.pointerId, el, cameraId: id, outside,
+    bounds: (outside ? planBoard : el.parentElement).getBoundingClientRect(),
+    startX: e.clientX, startY: e.clientY,
+    origin: { ...marker }, current: { ...marker }, lastValid: { ...marker }, moved: false,
+  };
+  activeCameraDrag = drag;
+  el.classList.add('dragging');
+  el.setPointerCapture?.(e.pointerId);
+
+  const onMove = (ev) => {
+    const state = activeCameraDrag;
+    if (!state || ev.pointerId !== state.id) return;
+    const dx = (ev.clientX - state.startX) / state.bounds.width * 100;
+    const dy = (ev.clientY - state.startY) / state.bounds.height * 100;
+    const wanted = {
+      x: state.origin.x + dx,
+      y: state.origin.y + dy,
+      rotation: state.origin.rotation,
+    };
+    const point = state.outside
+      ? clampOutsideMarker(el, wanted.x, wanted.y)
+      : clampInsideMarker(el, wanted.x, wanted.y);
+    const candidate = { ...point, rotation: wanted.rotation };
+    setMarkerVars(el, candidate);
+    if (markerCollision(el)) {
+      setMarkerVars(el, state.lastValid);
+    } else {
+      state.current = candidate;
+      state.lastValid = candidate;
+      state.moved = true;
+    }
+  };
+
+  const onEnd = (ev) => {
+    const state = activeCameraDrag;
+    if (!state || ev.pointerId !== state.id) return;
+    el.removeEventListener('pointermove', onMove);
+    el.removeEventListener('pointerup', onEnd);
+    el.removeEventListener('pointercancel', onEnd);
+    el.releasePointerCapture?.(ev.pointerId);
+    el.classList.remove('dragging');
+    activeCameraDrag = null;
+    if (state.moved) saveCameraMarker(state.cameraId, state.current);
+    else selectCamera(state.cameraId);
+  };
+
+  el.addEventListener('pointermove', onMove);
+  el.addEventListener('pointerup', onEnd);
+  el.addEventListener('pointercancel', onEnd);
+}
+
+function handleCameraKeys(e, id, el) {
+  if (e.target.closest('button')) return;
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    e.stopPropagation();
+    selectCamera(id);
+    return;
+  }
+  if (e.key === 'r' || e.key === 'R') {
+    e.preventDefault();
+    e.stopPropagation();
+    rotateCameraMarker(id);
+    return;
+  }
+  const step = e.shiftKey ? 5 : 2;
+  let dx = 0;
+  let dy = 0;
+  if (e.key === 'ArrowLeft') dx = -step;
+  else if (e.key === 'ArrowRight') dx = step;
+  else if (e.key === 'ArrowUp') dy = -step;
+  else if (e.key === 'ArrowDown') dy = step;
+  else return;
+  e.preventDefault();
+  e.stopPropagation();
+  const camera = cameras.find((c) => c.id === id);
+  if (!camera) return;
+  const outside = el.parentElement === planOutsideMarkers;
+  const marker = markerOf(camera);
+  const point = outside
+    ? clampOutsideMarker(el, marker.x + dx, marker.y + dy)
+    : clampInsideMarker(el, marker.x + dx, marker.y + dy);
+  const candidate = { ...point, rotation: marker.rotation };
+  setMarkerVars(el, candidate);
+  if (markerCollision(el)) {
+    setMarkerVars(el, marker);
+    return;
+  }
+  saveCameraMarker(id, candidate);
 }
 
 // Re-clamp the layout when the board changes size; a room that was big enough
@@ -706,7 +1060,10 @@ function updateFloorplanCounts() {
 window.addEventListener('resize', () => {
   clearTimeout(planResizeTimer);
   planResizeTimer = setTimeout(() => {
-    if (!activeRoomDrag && !activeRoomResize) renderFloorplanRooms();
+    if (!activeRoomDrag && !activeRoomResize && !activeCameraDrag && !activeBuildingResize) {
+      renderFloorplanRooms();
+      renderFloorplanCameras();
+    }
   }, 120);
 });
 
@@ -794,6 +1151,7 @@ function startRoomDrag(e, room, el) {
     drag.layout.x = planPercent(drag.origin.x + dx, 0, 100 - drag.layout.w);
     drag.layout.y = planPercent(drag.origin.y + dy, drag.limits.minY, 100 - drag.layout.h);
     if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) drag.moved = true;
+    if (!roomFitsCameras(drag.el, drag.layout)) return;
     setRoomVars(drag.el, drag.layout);
   };
 
@@ -836,6 +1194,7 @@ function startRoomResize(e, room, el) {
     resize.layout.w = planPercent(resize.origin.w + dx, resize.limits.minW, 100 - resize.origin.x);
     resize.layout.h = planPercent(resize.origin.h + dy, resize.limits.minH, 100 - resize.origin.y);
     if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) resize.moved = true;
+    if (!roomFitsCameras(resize.el, resize.layout)) return;
     setRoomVars(resize.el, resize.layout);
   };
 
@@ -870,6 +1229,7 @@ function handleResizeKeys(e, room, el) {
   const layout = constrainLayout(room, limits);
   layout.w = planPercent(layout.w + dx, limits.minW, 100 - layout.x);
   layout.h = planPercent(layout.h + dy, limits.minH, 100 - layout.y);
+  if (!roomFitsCameras(el, layout)) return;
   setRoomVars(el, layout);
   saveRoomLayout(room, layout);
 }
@@ -889,6 +1249,7 @@ function handleRoomKeys(e, room, el) {
   const layout = constrainLayout(room, limits);
   layout.x = planPercent(layout.x + dx, 0, 100 - layout.w);
   layout.y = planPercent(layout.y + dy, limits.minY, 100 - layout.h);
+  if (!roomFitsCameras(el, layout)) return;
   setRoomVars(el, layout);
   saveRoomLayout(room, layout);
 }
@@ -905,11 +1266,20 @@ function openRoomDialog() {
 
 planSelect.addEventListener('change', () => {
   localStorage.setItem('securecam.building', planSelect.value);
-  planOutlineName.textContent = currentPlanBuilding()?.name || '';
+  const building = currentPlanBuilding();
+  planOutlineName.textContent = building?.name || '';
   planOutlineName.title = planOutlineName.textContent ? `Rename ${planOutlineName.textContent}` : 'Rename building';
+  planOutline.style.setProperty('--right', building?.planRight ?? 3);
+  planOutline.style.setProperty('--bottom', building?.planBottom ?? 3);
   renderFloorplanRooms();
+  renderFloorplanCameras();
 });
 document.getElementById('floorplan-add-room').addEventListener('click', openRoomDialog);
+planOutsideAdd.addEventListener('click', () => {
+  const building = currentPlanBuilding();
+  if (!building) return;
+  openDialog(null, { buildingId: building.id, outside: true });
+});
 document.getElementById('room-cancel').addEventListener('click', () => roomDialog.close());
 roomForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1054,6 +1424,7 @@ field('cam-url').addEventListener('input', () => {
 
 async function openDialog(camera, placement = {}) {
   editingId = camera?.id || null;
+  dialogPlacement = null;
   camError.textContent = '';
   testResult.classList.add('hidden');
   field('dialog-title').textContent = camera ? 'Edit camera' : 'Add camera';
@@ -1071,20 +1442,44 @@ async function openDialog(camera, placement = {}) {
   }
   const preferredBuilding = placement.buildingId || camera?.buildingId;
   const preferredRoom = placement.roomId || camera?.roomId;
+  const outside = Boolean(camera?.outside || placement.outside);
+  // A camera started from a room tile or the outside button has its placement
+  // chosen already, so those fields are hidden and its values come from here.
+  const fixed = !camera && (Boolean(placement.roomId) || outside);
   const buildingId = preferredBuilding && buildings.some((b) => b.id === preferredBuilding)
     ? preferredBuilding
     : (buildings[0]?.id || '__new__');
   buildingSelect.value = buildingId;
   field('cam-new-building').value = '';
   field('cam-new-room').value = '';
+  dialogPlacement = {
+    fixed,
+    outside,
+    buildingId: buildingId === '__new__' ? '' : buildingId,
+    roomId: !outside && preferredRoom && preferredRoom !== '__new__' ? preferredRoom : '',
+  };
   if (buildingId === '__new__') {
     field('cam-room').innerHTML = '<option value="">Choose a room…</option>';
     updatePlacementFields();
   } else {
     setRoomOptions(buildingId, preferredRoom || '');
   }
+  const summary = field('cam-placement-summary');
+  if (fixed) {
+    const buildingName = buildings.find((b) => b.id === buildingId)?.name || 'Building';
+    const roomName = buildings.find((b) => b.id === buildingId)?.rooms
+      .find((r) => r.id === preferredRoom)?.name || 'Room';
+    summary.innerHTML = outside
+      ? `<span>🌳 ${esc(buildingName)} · Outside</span>`
+      : `<span>🏢 ${esc(buildingName)}</span><span class="sep">›</span><span>🚪 ${esc(roomName)}</span>`;
+    summary.classList.remove('hidden');
+  } else {
+    summary.textContent = '';
+    summary.classList.add('hidden');
+  }
   const room = buildings.find((b) => b.id === buildingId)?.rooms.find((r) => r.id === preferredRoom);
-  field('cam-name').value = camera?.name || (room ? suggestedCameraName(room.name) : '');
+  const defaultBase = outside ? 'Outside' : room?.name;
+  field('cam-name').value = camera?.name || (defaultBase ? suggestedCameraName(defaultBase) : '');
   field('cam-type').value = camera?.type || 'reolink';
   field('cam-host').value = camera?.host || '';
   field('cam-port').value = camera?.port || '';
@@ -1105,14 +1500,16 @@ function formPayload() {
   const roomId = field('cam-room').value;
   const creatingBuilding = buildingId === '__new__';
   const creatingRoom = creatingBuilding || roomId === '__new__';
+  const fixed = Boolean(dialogPlacement?.fixed);
   return {
     id: editingId || undefined,
     name: field('cam-name').value,
     type: field('cam-type').value,
-    buildingId: creatingBuilding ? '' : buildingId,
-    roomId: creatingRoom ? '' : roomId,
-    newBuilding: creatingBuilding ? field('cam-new-building').value.trim() : '',
-    newRoom: creatingRoom ? field('cam-new-room').value.trim() : '',
+    outside: fixed ? dialogPlacement.outside : false,
+    buildingId: fixed ? dialogPlacement.buildingId : (creatingBuilding ? '' : buildingId),
+    roomId: fixed ? dialogPlacement.roomId : (creatingRoom ? '' : roomId),
+    newBuilding: !fixed && creatingBuilding ? field('cam-new-building').value.trim() : '',
+    newRoom: !fixed && creatingRoom ? field('cam-new-room').value.trim() : '',
     host: field('cam-host').value,
     port: field('cam-port').value,
     username: field('cam-username').value,
@@ -1486,6 +1883,7 @@ async function boot() {
     return;
   }
   if (!applyAccountState(me)) return;
+  selectedCameraId = localStorage.getItem(feedKey()) || '';
   try {
     await loadPlacements();
     startOnboarding();

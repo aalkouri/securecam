@@ -32,7 +32,10 @@ function finish(text) {
     show('google-btn');
     show('google-divider');
   }
-  if (info.mail) show('forgot-link');
+  if (info.mail) {
+    show('forgot-link');
+    if (mode === 'signup') show('resend-btn');
+  }
   if (info.signup) show('signup-link');
   if (mode === 'forgot' && !info.mail) finish('This server cannot send email, so passwords cannot be reset here.');
   const key = new URLSearchParams(location.search).get('notice');
@@ -52,7 +55,6 @@ form.addEventListener('submit', async (e) => {
     return;
   }
   const body = {
-    username: value('username')?.trim(),
     email: value('email')?.trim(),
     password: value('password'),
     building: value('building')?.trim(),
@@ -73,7 +75,7 @@ form.addEventListener('submit', async (e) => {
       errorEl.textContent = data.error || 'Something went wrong';
     } else if (mode === 'forgot') {
       finish('If that email has an account, a reset link is on its way. It works for 1 hour.');
-    } else if (mode === 'signup' && !data.signedIn) {
+    } else if (mode === 'setup' || (mode === 'signup' && !data.signedIn)) {
       finish('Check your email for a link to confirm your account. It works for 24 hours.');
     } else {
       location.replace('/');
@@ -82,5 +84,25 @@ form.addEventListener('submit', async (e) => {
     errorEl.textContent = 'Could not reach the server';
   } finally {
     button.disabled = false;
+  }
+});
+
+document.getElementById('resend-btn')?.addEventListener('click', async () => {
+  errorEl.textContent = '';
+  const email = document.getElementById('email').value.trim();
+  if (!email) {
+    errorEl.textContent = 'Enter your email address first';
+    return;
+  }
+  try {
+    const res = await fetch('/api/resend-verification', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) errorEl.textContent = data.error || 'Could not send the email';
+    else finish('If that address has an unconfirmed account, a new link is on its way.');
+  } catch {
+    errorEl.textContent = 'Could not reach the server';
   }
 });

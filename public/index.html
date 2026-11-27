@@ -8,7 +8,7 @@
 </head>
 <body>
   <header>
-    <div class="brand"><span class="brand-dot"></span>SecureCam</div>
+    <div class="brand"><img src="/logo-mark-96.png" alt="" width="30" height="30">SecureCam</div>
     <div class="account-switcher hidden" id="account-switcher">
       <label for="account-select">Viewing account</label>
       <select id="account-select" aria-label="Select account to view"></select>
@@ -53,14 +53,25 @@
       <button type="button" class="primary" id="admin-picker-open">Open account</button>
     </section>
 
-    <!-- Interactive building layout. Rooms are draggable, and each room can
-         spawn a camera form already scoped to its building. -->
+    <!-- Live streams come first; the interactive plan sits underneath. -->
+    <div class="empty hidden" id="empty">
+      <h2>No cameras yet</h2>
+      <p>Add your first camera. For Reolink cameras you only need the IP address and login.<br>
+        No hardware yet? Choose <em>Other</em> and pick one of the built-in test feeds.</p>
+      <button class="primary" id="empty-add-btn">+ Add camera</button>
+    </div>
+    <p class="feed-hint" id="feed-hint">Click a camera below to show its feed here.</p>
+    <div class="grid" id="grid"></div>
+
+    <!-- Interactive building layout. Rooms and camera markers are draggable,
+         the black outline resizes, and the green area is for outside cameras. -->
     <section class="floorplan panel" id="floorplan" aria-labelledby="floorplan-title">
       <div class="floorplan-head">
         <div>
           <h2 id="floorplan-title">Building layout</h2>
-          <p class="hint">Drag a room to move it, use the corner icon to resize it, or click a title to rename.
-            Rooms stay clear of the building name and large enough for <strong>+ camera</strong>.</p>
+          <p class="hint">Click a camera below to show its feed at the top. Drag rooms or camera
+            icons to move them, use the corner icons to resize, or click a title to rename. Rotate a
+            camera with the button at its top right.</p>
         </div>
         <div class="floorplan-controls">
           <label for="floorplan-building">Building</label>
@@ -69,21 +80,18 @@
         </div>
       </div>
       <div class="floorplan-board" id="floorplan-board">
+        <span class="floorplan-outside-label" id="floorplan-outside-label">Outside</span>
+        <button type="button" class="plan-outside-add" id="floorplan-add-outside">+ Outside Camera</button>
+        <div class="floorplan-outside-markers" id="floorplan-outside-markers"></div>
         <div class="floorplan-building" id="floorplan-outline">
           <button type="button" class="floorplan-building-name" id="floorplan-outline-name" title="Rename building"></button>
           <div class="floorplan-rooms" id="floorplan-rooms"></div>
           <p class="floorplan-empty hidden" id="floorplan-empty">No rooms in this building yet. Add a room to start your layout.</p>
+          <div class="floorplan-building-resize" id="floorplan-building-resize"
+            role="separator" aria-label="Resize building" tabindex="0" title="Drag to resize the building"></div>
         </div>
       </div>
     </section>
-
-    <div class="empty hidden" id="empty">
-      <h2>No cameras yet</h2>
-      <p>Add your first camera. For Reolink cameras you only need the IP address and login.<br>
-        No hardware yet? Choose <em>Other</em> and pick one of the built-in test feeds.</p>
-      <button class="primary" id="empty-add-btn">+ Add camera</button>
-    </div>
-    <div class="grid" id="grid"></div>
   </main>
 
   <div id="alerts" class="toasts" aria-live="polite"></div>
@@ -133,49 +141,34 @@
     </div>
   </div>
 
-  <!-- First-run guide for accounts that have no building yet. It stays open
-       until a building, room and first camera have been created. -->
-  <div id="onboarding" class="onboarding hidden" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+  <!-- Two-step first-run guide: building, then room. Finishing drops the user
+       straight into the dashboard with the new layout already selected. -->
+  <div id="onboarding" class="onboarding hidden" role="dialog" aria-modal="true" aria-label="Quick setup">
     <div class="onboarding-panel">
-      <div class="onboarding-hero">
-        <div class="onboarding-hero-icon" id="onboarding-hero-icon" aria-hidden="true">🏢</div>
-        <div>
-          <p class="eyebrow">Quick setup · <span id="onboarding-progress-text">Step 1 of 3</span></p>
-          <h2 id="onboarding-title">Let’s add your first building</h2>
-          <p id="onboarding-copy">A building is the property or site where your cameras will live. Name it something you’ll recognise later.</p>
+      <section id="onboarding-step-1">
+        <img class="onboarding-photo" src="/onboarding/building.jpg" alt="A house">
+        <label for="onboarding-building-name">Building name</label>
+        <input type="text" id="onboarding-building-name" placeholder="Building name" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 \-]*" title="Letters, numbers, spaces and hyphens only">
+      </section>
+
+      <section id="onboarding-step-2" class="hidden">
+        <div class="onboarding-carousel" aria-label="Room photos">
+          <div class="onboarding-carousel-track">
+            <img src="/onboarding/room-kitchen.jpg" alt="Kitchen">
+            <img src="/onboarding/room-bedroom.jpg" alt="Bedroom">
+            <img src="/onboarding/room-office.jpg" alt="Office">
+            <img src="/onboarding/room-living.jpg" alt="Living room">
+            <img src="/onboarding/room-hallway.jpg" alt="Hallway">
+            <img src="/onboarding/room-dining.jpg" alt="Dining room">
+          </div>
         </div>
-      </div>
+        <label for="onboarding-room-name">Room name</label>
+        <input type="text" id="onboarding-room-name" placeholder="Room name" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 \-]*" title="Letters, numbers, spaces and hyphens only">
+      </section>
 
-      <div class="onboarding-steps" aria-label="Setup progress">
-        <div class="onboard-step active" data-step="1"><span aria-hidden="true">🏢</span><span><strong>Building</strong><small>Where</small></span></div>
-        <div class="onboard-step" data-step="2"><span aria-hidden="true">🚪</span><span><strong>Room</strong><small>Which area</small></span></div>
-        <div class="onboard-step" data-step="3"><span aria-hidden="true">📷</span><span><strong>Camera</strong><small>Your first feed</small></span></div>
-      </div>
-
-      <div class="onboarding-body">
-        <section id="onboarding-step-1">
-          <label for="onboarding-building-name">Building name</label>
-          <input type="text" id="onboarding-building-name" placeholder="Home, Office Block, Warehouse…" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only">
-          <div class="tip"><span aria-hidden="true">💡</span><span>Think of the <strong>big picture</strong> first. You can add more buildings and rooms later.</span></div>
-        </section>
-
-        <section id="onboarding-step-2" class="hidden">
-          <div class="onboarding-summary" id="onboarding-building-summary"></div>
-          <label for="onboarding-room-name">Room name</label>
-          <input type="text" id="onboarding-room-name" placeholder="Front door, Driveway, Lobby…" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only">
-          <div class="tip"><span aria-hidden="true">💡</span><span>This room belongs to the building above. Every camera gets placed in a room so you always know where to look.</span></div>
-        </section>
-
-        <section id="onboarding-step-3" class="hidden">
-          <div class="onboarding-summary" id="onboarding-room-summary"></div>
-          <div class="tip"><span aria-hidden="true">💡</span><span>Choose <strong>Reolink</strong> for a real camera, or <strong>Other</strong> to try one of the built-in demo feeds. No camera handy? The demos work right away.</span></div>
-          <div id="onboarding-camera-slot"></div>
-        </section>
-
-        <div class="error" id="onboarding-error" role="alert"></div>
-        <div class="onboarding-actions" id="onboarding-actions">
-          <button type="button" class="primary" id="onboarding-next">Create building</button>
-        </div>
+      <div class="error" id="onboarding-error" role="alert"></div>
+      <div class="onboarding-actions">
+        <button type="button" class="primary" id="onboarding-next">Next</button>
       </div>
     </div>
   </div>
@@ -185,17 +178,17 @@
       <h2 id="dialog-title">Add camera</h2>
 
       <label for="cam-name">Name</label>
-      <input type="text" id="cam-name" placeholder="Lobby - CAMERA" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only" required>
+      <input type="text" id="cam-name" placeholder="Lobby - CAMERA" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9 \-]*" title="Letters, numbers, spaces and hyphens only" required>
 
       <div id="cam-placement-summary" class="onboarding-summary hidden"></div>
 
-      <div class="row-2 placement-row">
+      <div id="cam-placement-fields" class="row-2 placement-row">
         <div>
           <label for="cam-building">Building</label>
           <select id="cam-building" required>
             <option value="__new__">+ Create new building…</option>
           </select>
-          <input type="text" id="cam-new-building" class="hidden" placeholder="New building name" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only">
+          <input type="text" id="cam-new-building" class="hidden" placeholder="New building name" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 \-]*" title="Letters, numbers, spaces and hyphens only">
         </div>
         <div>
           <div id="room-select-field">
@@ -204,7 +197,7 @@
               <option value="">Choose a room…</option>
             </select>
           </div>
-          <input type="text" id="cam-new-room" class="hidden" placeholder="New room name" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only">
+          <input type="text" id="cam-new-room" class="hidden" placeholder="New room name" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 \-]*" title="Letters, numbers, spaces and hyphens only">
         </div>
       </div>
 
@@ -252,7 +245,7 @@
           <option value="test://night-crossing" data-name="Night crossing">Night crossing</option>
         </select>
         <label for="cam-url">Stream URL</label>
-        <input type="text" id="cam-url" placeholder="rtsp://user:pass@192.168.1.50:554/stream1" pattern="[A-Za-z0-9._~:/?#@&amp;=+$,%-]*" title="Use standard URL characters only">
+        <input type="text" id="cam-url" placeholder="rtsp://user:pass@192.168.1.50:554/stream1" title="Use a standard RTSP, test:// or clip:// URL">
         <div class="hint">The grid uses a lower-bandwidth view where available; the full view loads the original.
           The built-in feeds use <code>test://demo</code>, <code>test://reolink-sample</code>,
           <code>test://reolink-night-day</code>, <code>test://drive-thru</code>,
@@ -279,7 +272,7 @@
       <h2>Add a room</h2>
       <p class="hint" id="room-dialog-building"></p>
       <label for="room-name">Room name</label>
-      <input type="text" id="room-name" placeholder="Front door, Driveway, Lobby…" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only" required>
+      <input type="text" id="room-name" placeholder="Front door, Driveway, Lobby…" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 \-]*" title="Letters, numbers, spaces and hyphens only" required>
       <div class="error" id="room-error" role="alert"></div>
       <div class="row">
         <div class="right">
@@ -294,7 +287,7 @@
     <form method="dialog" id="rename-form">
       <h2 id="rename-title">Rename</h2>
       <label for="rename-input" id="rename-label">Name</label>
-      <input type="text" id="rename-input" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 -]*" title="Letters, numbers, spaces and hyphens only" required>
+      <input type="text" id="rename-input" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9 \-]*" title="Letters, numbers, spaces and hyphens only" required>
       <div class="error" id="rename-error" role="alert"></div>
       <div class="row">
         <div class="right">
@@ -329,6 +322,14 @@
     </div>
   </template>
 
+  <template id="camera-marker-template">
+    <div class="plan-camera" role="group" tabindex="0" aria-label="Camera. Click to view, drag to move.">
+      <button type="button" class="plan-camera-rotate" title="Rotate camera clockwise" aria-label="Rotate camera clockwise">↻</button>
+      <span class="plan-camera-icon" aria-hidden="true"><img src="/camera-marker.png" alt=""></span>
+      <span class="plan-camera-name"></span>
+    </div>
+  </template>
+
   <template id="tile-template">
     <div class="tile">
       <div class="video-box" title="Open camera">
@@ -343,7 +344,6 @@
         <div class="tools">
           <span class="badge"></span>
           <button class="icon" data-action="open" title="Open full view">⛶</button>
-          <button class="icon" data-action="restart" title="Restart stream">↻</button>
           <button class="icon" data-action="edit" title="Edit">✎</button>
         </div>
       </div>

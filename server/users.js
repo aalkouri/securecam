@@ -36,9 +36,10 @@ db.exec(`
 {
   const settings = getSettings();
   if (settings.admin && !db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
-    db.prepare(`INSERT INTO users(username, password_hash, role, verified, created_at)
-                VALUES (?, ?, 'admin', 1, ?)`)
-      .run(settings.admin.username, settings.admin.passwordHash, new Date().toISOString());
+    const legacy = String(settings.admin.username || '').trim().toLowerCase();
+    db.prepare(`INSERT INTO users(email, username, password_hash, role, verified, created_at)
+                VALUES (?, ?, ?, 'admin', 1, ?)`)
+      .run(normalizeEmail(legacy), normalizeEmail(legacy), settings.admin.passwordHash, new Date().toISOString());
     delete settings.admin;
     saveSettings(settings);
   }
@@ -50,8 +51,11 @@ db.exec(`
 {
   const wanted = String(readJson('config.json', {}).adminEmail || '').trim().toLowerCase();
   if (wanted && !db.prepare('SELECT 1 FROM users WHERE email = ?').get(wanted)) {
-    db.prepare("UPDATE users SET email = ? WHERE role = 'admin' AND email IS NULL").run(wanted);
+    db.prepare("UPDATE users SET email = ?, username = ? WHERE role = 'admin' AND email IS NULL")
+      .run(wanted, wanted);
   }
+  // Keep all legacy rows consistent with the email-as-username rule.
+  db.prepare('UPDATE users SET username = email WHERE email IS NOT NULL AND (username IS NULL OR username <> email)').run();
 }
 
 function userRow(row) {
@@ -71,6 +75,14 @@ function userRow(row) {
 export function normalizeEmail(value) {
   const email = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
+
+// Every account is identified by its email address. Older installations may
+// still have a username-only admin; keep it readable, but never write or sign
+// in with a username again.
+export function setUsernameToEmail(id, email) {
+  db.prepare('UPDATE users SET username = ?, email = COALESCE(email, ?) WHERE id = ?')
+    .run(email, email, id);
 }
 
 export function userCount() {
@@ -102,15 +114,20 @@ export function findByGoogleSub(sub) {
 
 // Sign-in accepts an email address, or the username of an older admin account.
 export function findByLogin(login) {
-  return userRow(db.prepare('SELECT * FROM users WHERE email = ? OR username = ?').get(login, login));
+  const user = findByEmail(normalizeEmail(login));
+  if (user) return user;
+  return userRow(db.prepare('SELECT * FROM users WHERE username = ?').get(login));
 }
 
-// The very first account becomes the admin.
+// The very first account becomes the admin. Usernames are emails, so callers
+// must supply a valid email; the only exception is the legacy admin migration
+// above, which supplies a username directly and is normalized immediately.
 export function createUser({ email = null, username = null, passwordHash = null, googleSub = null, verified = false }) {
   const role = userCount() === 0 ? 'admin' : 'user';
+  const identity = normalizeEmail(email) || normalizeEmail(username) || null;
   const result = db.prepare(`INSERT INTO users(email, username, password_hash, google_sub, role, verified, created_at)
                              VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(email, username, passwordHash, googleSub, role, verified ? 1 : 0, new Date().toISOString());
+    .run(identity, identity, passwordHash, googleSub, role, verified ? 1 : 0, new Date().toISOString());
   return getUser(Number(result.lastInsertRowid));
 }
 
@@ -127,14 +144,37 @@ export function markVerified(id) {
 // An account whose address was never confirmed may have been started by
 // someone else, so its password is dropped when the real owner arrives.
 export function linkGoogle(id, sub, email) {
-  db.prepare(`UPDATE users SET google_sub = ?, email = COALESCE(email, ?),
+  db.prepare(`UPDATE users SET google_sub = ?, email = ?, username = ?,
               password_hash = CASE WHEN verified = 1 THEN password_hash ELSE NULL END,
               verified = 1 WHERE id = ?`)
-    .run(sub, email, id);
+    .run(sub, email, email, id);
 }
 
 export function setEmail(id, email) {
-  db.prepare('UPDATE users SET email = ? WHERE id = ?').run(email, id);
+  db.prepare('UPDATE users SET email = ?, username = ? WHERE id = ?').run(email, email, id);
+}
+
+// One-time cleanup requested at startup: only the admin account remains.
+// The marker lives in settings.json so accounts created later are kept.
+export function needsNonAdminCleanup() {
+  return getSettings().nonAdminAccountsCleanupDone !== true;
+}
+
+export function markNonAdminCleanupDone() {
+  const settings = getSettings();
+  settings.nonAdminAccountsCleanupDone = true;
+  saveSettings(settings);
+}
+
+export function listNonAdminIds() {
+  return db.prepare("SELECT id FROM users WHERE role <> 'admin' ORDER BY id").all().map((row) => row.id);
+}
+
+export function deleteUsers(ids) {
+  const list = [...new Set(ids)].filter((id) => Number.isInteger(id));
+  if (!list.length) return 0;
+  const placeholders = list.map(() => '?').join(',');
+  return db.prepare(`DELETE FROM users WHERE id IN (${placeholders}) AND role <> 'admin'`).run(...list).changes;
 }
 
 // ---- one-time email links ----

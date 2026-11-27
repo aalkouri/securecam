@@ -88,7 +88,11 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS camera_placements (
     camera_id   TEXT PRIMARY KEY,
     building_id TEXT NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
-    room_id     TEXT NOT NULL,
+    room_id     TEXT,
+    outside     INTEGER NOT NULL DEFAULT 0,
+    camera_x    REAL NOT NULL DEFAULT 50,
+    camera_y    REAL NOT NULL DEFAULT 50,
+    rotation    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL,
     FOREIGN KEY (building_id, room_id) REFERENCES rooms(building_id, id) ON DELETE RESTRICT
   );
@@ -148,6 +152,59 @@ ensureColumn('rooms', 'x', 'REAL');
 ensureColumn('rooms', 'y', 'REAL');
 ensureColumn('rooms', 'w', 'REAL');
 ensureColumn('rooms', 'h', 'REAL');
+ensureColumn('buildings', 'plan_right', 'REAL NOT NULL DEFAULT 3');
+ensureColumn('buildings', 'plan_bottom', 'REAL NOT NULL DEFAULT 3');
+
+// Camera markers are new. Older installs had a required room and no marker
+// position, so rebuild that table once while keeping every camera id.
+let markersNeedLayout = false;
+{
+  const columns = db.prepare('PRAGMA table_info(camera_placements)').all();
+  const names = new Set(columns.map((column) => column.name));
+  const roomColumn = columns.find((column) => column.name === 'room_id');
+  const needsRebuild = roomColumn?.notnull === 1
+    || !['outside', 'camera_x', 'camera_y', 'rotation'].every((name) => names.has(name));
+  if (needsRebuild) {
+    markersNeedLayout = true;
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN;
+      CREATE TABLE camera_placements_new (
+        camera_id   TEXT PRIMARY KEY,
+        building_id TEXT NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
+        room_id     TEXT,
+        outside     INTEGER NOT NULL DEFAULT 0,
+        camera_x    REAL NOT NULL DEFAULT 50,
+        camera_y    REAL NOT NULL DEFAULT 50,
+        rotation    INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL,
+        FOREIGN KEY (building_id, room_id) REFERENCES rooms(building_id, id) ON DELETE RESTRICT
+      );
+      INSERT INTO camera_placements_new
+        (camera_id, building_id, room_id, outside, camera_x, camera_y, rotation, created_at)
+        SELECT camera_id, building_id, room_id, 0, 50, 50, 0, created_at FROM camera_placements;
+      DROP TABLE camera_placements;
+      ALTER TABLE camera_placements_new RENAME TO camera_placements;
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  }
+  // Spread existing markers so cameras in the same room do not stack up.
+  if (markersNeedLayout) {
+    const rows = db.prepare(`SELECT camera_id, building_id, room_id, outside, camera_x, camera_y
+      FROM camera_placements ORDER BY created_at, camera_id`).all();
+    const used = new Map();
+    const update = db.prepare('UPDATE camera_placements SET camera_x = ?, camera_y = ? WHERE camera_id = ?');
+    for (const row of rows) {
+      const key = row.outside ? `outside:${row.building_id}` : `room:${row.room_id || row.building_id}`;
+      const index = used.get(key) || 0;
+      used.set(key, index + 1);
+      const x = row.outside ? 7 + (index % 2) * 7 : 25 + (index % 3) * 25;
+      const y = row.outside ? 38 + Math.floor(index / 2) * 18 : 32 + Math.floor(index / 3) * 20;
+      update.run(Math.min(90, x), Math.min(84, y), row.camera_id);
+    }
+  }
+}
 
 // Buildings were first created with names unique across the whole server.
 // SQLite cannot drop that constraint in place, so rebuild the table once:
@@ -178,6 +235,10 @@ db.exec('UPDATE alerts SET last_seen_at = created_at WHERE last_seen_at IS NULL'
 // controls. The browser enforces an even stricter minimum based on its own
 // font sizes; these are the database's hard limits.
 const ROOM_LIMITS = { minY: 10, minW: 14, minH: 18 };
+// The building outline keeps the top-left corner fixed; only its right and
+// bottom edges move inwards from the grass area. These are hard limits; the
+// browser applies stricter pixel limits based on the actual board size.
+const BUILDING_LIMITS = { minRight: 2, maxRight: 60, minBottom: 2, maxBottom: 65 };
 
 // Default floor-plan slots. Rooms are percentages of the building square, so
 // a plan looks the same on a laptop and a phone. A few rooms sit in a loose
@@ -303,7 +364,9 @@ function ownsBuilding(buildingId, ownerId) {
 }
 
 export function listBuildings(ownerId) {
-  const buildings = db.prepare('SELECT id, name, created_at AS createdAt FROM buildings WHERE owner_id = ? ORDER BY name COLLATE NOCASE').all(ownerId);
+  const buildings = db.prepare(`SELECT id, name, created_at AS createdAt,
+    plan_right AS planRight, plan_bottom AS planBottom
+    FROM buildings WHERE owner_id = ? ORDER BY name COLLATE NOCASE`).all(ownerId);
   const rooms = db.prepare(`SELECT id, building_id AS buildingId, name, created_at AS createdAt,
     x, y, w, h FROM rooms WHERE building_id IN (SELECT id FROM buildings WHERE owner_id = ?)
     ORDER BY name COLLATE NOCASE`).all(ownerId);
@@ -360,6 +423,24 @@ export function updateRoomLayout(roomId, ownerId, layout = {}) {
   return result.changes ? { x, y, w, h } : null;
 }
 
+function normalizeBuildingLayout(layout = {}) {
+  const right = clamp(layout.planRight ?? layout.right, BUILDING_LIMITS.minRight,
+    BUILDING_LIMITS.maxRight, 3);
+  const bottom = clamp(layout.planBottom ?? layout.bottom, BUILDING_LIMITS.minBottom,
+    BUILDING_LIMITS.maxBottom, 3);
+  return { planRight: right, planBottom: bottom };
+}
+
+// Only the black outline resizes; the grass board and its outside camera stay
+// where they are. Ownership is checked before anything is written.
+export function updateBuildingLayout(buildingId, ownerId, layout = {}) {
+  if (!ownsBuilding(buildingId, ownerId)) return null;
+  const { planRight, planBottom } = normalizeBuildingLayout(layout);
+  const result = db.prepare('UPDATE buildings SET plan_right = ?, plan_bottom = ? WHERE id = ?')
+    .run(planRight, planBottom, buildingId);
+  return result.changes ? { planRight, planBottom } : null;
+}
+
 export function renameBuilding(buildingId, ownerId, value) {
   if (!ownsBuilding(buildingId, ownerId)) return null;
   const name = placementName(value, 'Building');
@@ -403,47 +484,94 @@ export function deleteRoom(roomId, ownerId) {
 
 // Resolve the camera form's placement. Inline "new building" and "new room"
 // names are created here; otherwise an existing room must match its building.
+// Cameras placed with the outdoor button have no room at all.
 export function resolveCameraPlacement(body = {}, existing = null, ownerId) {
   const newBuilding = placementName(body.newBuilding, 'Building', false);
   const newRoom = placementName(body.newRoom, 'Room', false);
+  const outside = body.outside === true || body.outside === 'true';
   let buildingId = typeof body.buildingId === 'string' ? body.buildingId.trim() : '';
   let roomId = typeof body.roomId === 'string' ? body.roomId.trim() : '';
 
   if (newBuilding) {
-    if (!newRoom) throw new Error('Enter a room name for the new building');
     const building = createBuilding(newBuilding, ownerId);
     buildingId = building.id;
+    if (outside) return { buildingId, roomId: null, outside: true };
+    if (!newRoom) throw new Error('Enter a room name for the new building');
     const room = createRoom(building.id, newRoom, ownerId);
-    return { buildingId, roomId: room.id };
+    return { buildingId, roomId: room.id, outside: false };
   }
 
   if (!buildingId) {
-    if (existing?.buildingId && existing?.roomId) return existing;
+    if (existing?.buildingId && (existing.outside || existing.roomId)) return existing;
     throw new Error('Building is required');
   }
   if (!ownsBuilding(buildingId, ownerId)) throw new Error('Building not found');
 
+  if (outside) return { buildingId, roomId: null, outside: true };
+
   if (newRoom) {
     const room = createRoom(buildingId, newRoom, ownerId);
-    return { buildingId, roomId: room.id };
+    return { buildingId, roomId: room.id, outside: false };
   }
 
   if (!roomId) {
-    if (existing?.buildingId === buildingId && existing?.roomId) return existing;
+    if (existing?.buildingId === buildingId && (existing.outside || existing.roomId)) return existing;
     throw new Error('Room is required');
   }
   if (!db.prepare('SELECT 1 FROM rooms WHERE id = ? AND building_id = ?').get(roomId, buildingId)) {
     throw new Error('Room does not belong to this building');
   }
-  return { buildingId, roomId };
+  return { buildingId, roomId, outside: false };
+}
+
+function normalizeMarker(marker = {}, fallback = {}) {
+  const x = clamp(marker.x ?? marker.cameraX, 0, 100, fallback.x ?? 50);
+  const y = clamp(marker.y ?? marker.cameraY, 0, 100, fallback.y ?? 50);
+  let rotation = Number(marker.rotation);
+  if (!Number.isFinite(rotation)) rotation = fallback.rotation ?? 0;
+  rotation = ((Math.round(rotation / 45) * 45) % 360 + 360) % 360;
+  return { x, y, rotation };
+}
+
+// Give each new camera a separate starting spot so markers never stack up.
+function defaultMarker(placement) {
+  const rows = db.prepare('SELECT room_id AS roomId, outside FROM camera_placements WHERE building_id = ?')
+    .all(placement.buildingId);
+  const siblings = rows.filter((row) => Boolean(row.outside) === Boolean(placement.outside)
+    && (row.roomId ?? null) === (placement.roomId ?? null)).length;
+  if (placement.outside) {
+    return { x: 7 + (siblings % 2) * 7, y: 38 + Math.floor(siblings / 2) * 16 };
+  }
+  return { x: 25 + (siblings % 3) * 25, y: 30 + Math.floor(siblings / 3) * 20 };
 }
 
 export function setCameraPlacement(cameraId, placement) {
-  db.prepare(`INSERT INTO camera_placements (camera_id, building_id, room_id, created_at)
-    VALUES (?, ?, ?, ?)
+  const current = db.prepare(`SELECT room_id AS roomId, outside, camera_x AS x, camera_y AS y,
+    rotation FROM camera_placements WHERE camera_id = ?`).get(cameraId);
+  const outside = placement.outside ? 1 : 0;
+  const roomId = outside ? null : placement.roomId;
+  const marker = normalizeMarker(placement, current || defaultMarker({ ...placement, outside }));
+  db.prepare(`INSERT INTO camera_placements
+      (camera_id, building_id, room_id, outside, camera_x, camera_y, rotation, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(camera_id) DO UPDATE SET building_id = excluded.building_id,
-      room_id = excluded.room_id`)
-    .run(cameraId, placement.buildingId, placement.roomId, new Date().toISOString());
+      room_id = excluded.room_id, outside = excluded.outside, camera_x = excluded.camera_x,
+      camera_y = excluded.camera_y, rotation = excluded.rotation`)
+    .run(cameraId, placement.buildingId, roomId, outside, marker.x, marker.y, marker.rotation,
+      new Date().toISOString());
+  return marker;
+}
+
+export function updateCameraMarker(cameraId, ownerId, marker = {}) {
+  const current = db.prepare(`SELECT p.camera_x AS x, p.camera_y AS y, p.rotation
+    FROM camera_placements p
+    JOIN buildings b ON b.id = p.building_id
+    WHERE p.camera_id = ? AND b.owner_id = ?`).get(cameraId, ownerId);
+  if (!current) return null;
+  const next = normalizeMarker(marker, current);
+  db.prepare('UPDATE camera_placements SET camera_x = ?, camera_y = ?, rotation = ? WHERE camera_id = ?')
+    .run(next.x, next.y, next.rotation, cameraId);
+  return next;
 }
 
 export function deleteCameraPlacement(cameraId) {
@@ -452,11 +580,16 @@ export function deleteCameraPlacement(cameraId) {
 
 export function getCameraPlacements() {
   const rows = db.prepare(`SELECT p.camera_id AS cameraId, p.building_id AS buildingId,
-      p.room_id AS roomId, b.name AS buildingName, r.name AS roomName
+      p.room_id AS roomId, p.outside, p.camera_x AS cameraX, p.camera_y AS cameraY,
+      p.rotation, b.name AS buildingName,
+      CASE WHEN p.outside = 1 THEN NULL ELSE r.name END AS roomName
     FROM camera_placements p
     JOIN buildings b ON b.id = p.building_id
-    JOIN rooms r ON r.id = p.room_id AND r.building_id = p.building_id`).all();
-  return new Map(rows.map((row) => [row.cameraId, row]));
+    LEFT JOIN rooms r ON r.id = p.room_id AND r.building_id = p.building_id`).all();
+  return new Map(rows.map((row) => [row.cameraId, {
+    ...row,
+    outside: Boolean(row.outside),
+  }]));
 }
 
 // Old installs had no placement data. Give their cameras one fabricated
@@ -469,9 +602,6 @@ export function ensureCameraPlacements(cameras = []) {
   const result = { fabricated: false, added: 0, building: null };
   if (!missing.length) return result;
 
-  const insert = db.prepare(`INSERT OR IGNORE INTO camera_placements
-    (camera_id, building_id, room_id, created_at) VALUES (?, ?, ?, ?)`);
-  const now = new Date().toISOString();
   for (const ownerId of new Set(missing.map((cam) => cam.ownerId ?? 1))) {
     let building = listBuildings(ownerId)[0];
     if (!building) {
@@ -482,7 +612,8 @@ export function ensureCameraPlacements(cameras = []) {
       .all(building.id);
     if (!rooms.length) rooms = [{ id: createRoom(building.id, 'Default Room', ownerId).id }];
     for (const cam of missing.filter((c) => (c.ownerId ?? 1) === ownerId)) {
-      result.added += insert.run(cam.id, building.id, rooms[0].id, now).changes;
+      setCameraPlacement(cam.id, { buildingId: building.id, roomId: rooms[0].id, outside: false });
+      result.added += 1;
     }
     result.building = result.building || { id: building.id, name: building.name };
   }
@@ -1055,6 +1186,39 @@ export function counts(ownerId) {
     sightings: db.prepare(`SELECT COUNT(*) AS n FROM sightings s JOIN objects o ON o.id = s.object_id WHERE o.owner_id = ? AND o.sightings >= ?`).get(ownerId, MIN_SIGHTINGS).n,
     alerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE o.owner_id = ? AND o.sightings >= ?`).get(ownerId, MIN_SIGHTINGS).n,
     unreadAlerts: db.prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN objects o ON o.id = a.object_id WHERE o.owner_id = ? AND a.ack = 0 AND o.sightings >= ?`).get(ownerId, MIN_SIGHTINGS).n,
+  };
+}
+
+// Remove every owned row when an account is deleted. Files are returned to
+// the caller so it can delete them after the database transaction commits.
+export function deleteOwnerData(ownerId) {
+  const snapshots = new Set(db.prepare(`SELECT DISTINCT s.snapshot AS name
+    FROM sightings s JOIN objects o ON o.id = s.object_id
+    WHERE o.owner_id = ? AND s.snapshot IS NOT NULL`).all(ownerId).map((row) => row.name));
+  const clips = new Set(db.prepare(`SELECT DISTINCT a.clip AS name
+    FROM alerts a JOIN objects o ON o.id = a.object_id
+    WHERE o.owner_id = ? AND a.clip IS NOT NULL`).all(ownerId).map((row) => row.name));
+
+  db.exec('BEGIN');
+  try {
+    // Placements reference buildings with RESTRICT, so they must go first.
+    db.prepare('DELETE FROM camera_placements WHERE building_id IN (SELECT id FROM buildings WHERE owner_id = ?)')
+      .run(ownerId);
+    db.prepare('DELETE FROM buildings WHERE owner_id = ?').run(ownerId); // rooms cascade
+    db.prepare('DELETE FROM objects WHERE owner_id = ?').run(ownerId); // sightings + alerts cascade
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  const stillUsedSnapshots = new Set(db.prepare('SELECT DISTINCT snapshot AS name FROM sightings').all()
+    .map((row) => row.name));
+  const stillUsedClips = new Set(db.prepare('SELECT DISTINCT clip AS name FROM alerts WHERE clip IS NOT NULL').all()
+    .map((row) => row.name));
+  return {
+    snapshots: [...snapshots].filter((name) => !stillUsedSnapshots.has(name)),
+    clips: [...clips].filter((name) => !stillUsedClips.has(name)),
   };
 }
 

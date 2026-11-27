@@ -7,7 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { getSettings, getCameras, saveCameras } from './store.js';
 import { isSetupComplete, requireAuth, requireAdmin } from './auth.js';
 import { registerAccountRoutes } from './accounts.js';
-import { adminId, listUsers, getUser, closeUsers } from './users.js';
+import {
+  adminId, listUsers, getUser, closeUsers,
+  needsNonAdminCleanup, markNonAdminCleanupDone, listNonAdminIds, deleteUsers,
+} from './users.js';
 import { assertCameraAllowed } from './guard.js';
 import { streams, STREAM_DIR, probe } from './streams.js';
 import { validateCamera, publicCamera, gridUrl, hdUrl, migrateTestCameraUrls } from './cameras.js';
@@ -18,10 +21,10 @@ import {
   SNAPSHOT_DIR, setSetting, listObjects, getObject, renameObject, deleteObject,
   listSightings, listAlerts, getAlert, ackAlerts, cleanupSnapshots,
   consolidateAlerts, pruneOldAlerts, closeDatabase, ownsSnapshot,
-  listBuildings, createBuilding, createRoom, updateRoomLayout, renameBuilding, renameRoom,
-  deleteRoom, resolveCameraPlacement, setCameraPlacement, deleteCameraPlacement,
-  getCameraPlacements,
-  ensureCameraPlacements,
+  listBuildings, createBuilding, createRoom, updateRoomLayout, updateBuildingLayout,
+  renameBuilding, renameRoom, deleteRoom, resolveCameraPlacement, setCameraPlacement,
+  deleteCameraPlacement, getCameraPlacements, updateCameraMarker,
+  ensureCameraPlacements, deleteOwnerData,
 } from './database.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -134,6 +137,17 @@ app.put('/api/buildings/:id', (req, res) => {
   }
 });
 
+// Only the black building outline resizes; rooms and the grass stay put.
+app.put('/api/buildings/:id/layout', (req, res) => {
+  try {
+    const layout = updateBuildingLayout(req.params.id, req.user.id, req.body || {});
+    if (!layout) return res.status(404).json({ error: 'Building not found' });
+    res.json(layout);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.post('/api/buildings/:id/rooms', (req, res) => {
   try {
     res.status(201).json(createRoom(req.params.id, req.body?.name, req.user.id));
@@ -182,7 +196,13 @@ function viewCamera(cam, placements) {
     buildingId: place.buildingId || null,
     buildingName: place.buildingName || null,
     roomId: place.roomId || null,
-    roomName: place.roomName || null,
+    roomName: place.outside ? 'Outside' : (place.roomName || null),
+    outside: Boolean(place.outside),
+    marker: {
+      x: place.cameraX ?? 50,
+      y: place.cameraY ?? 50,
+      rotation: place.rotation ?? 0,
+    },
   });
 }
 
@@ -245,7 +265,11 @@ app.put('/api/cameras/:id', async (req, res) => {
     const validated = validateCamera(req.body || {}, before);
     if (cameraNameTaken(validated.name, req, before.id)) throw new Error('A camera with that name already exists');
     await assertCameraAllowed({ ...validated }, req.user, 0);
-    const placement = resolveCameraPlacement(req.body || {}, getCameraPlacements().get(before.id), req.user.id);
+    const previousPlacement = getCameraPlacements().get(before.id) || {};
+    const placement = resolveCameraPlacement(req.body || {}, previousPlacement, req.user.id);
+    placement.cameraX = previousPlacement.cameraX;
+    placement.cameraY = previousPlacement.cameraY;
+    placement.rotation = previousPlacement.rotation;
     const cam = { id: before.id, ownerId: before.ownerId, ...validated, ...placement };
     // Re-read after the await: another request may have saved in between.
     const cameras = getCameras();
@@ -256,6 +280,18 @@ app.put('/api/cameras/:id', async (req, res) => {
     setCameraPlacement(cam.id, placement);
     if (cam.enabled) streams.startCamera(cam); else streams.stopCamera(cam.id);
     res.json(viewCamera(cam));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Dragging or rotating a floor-plan marker is a tiny, frequent write.
+app.put('/api/cameras/:id/marker', (req, res) => {
+  if (!findCamera(req.params.id, req)) return res.status(404).json({ error: 'Camera not found' });
+  try {
+    const marker = updateCameraMarker(req.params.id, req.user.id, req.body || {});
+    if (!marker) return res.status(404).json({ error: 'Camera placement not found' });
+    res.json(marker);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -446,6 +482,37 @@ const snapshotCleanup = cleanupSnapshots();
 if (snapshotCleanup.deduped || snapshotCleanup.orphans) {
   console.log(`Snapshots: removed ${snapshotCleanup.deduped} duplicates and ${snapshotCleanup.orphans} unused files`);
 }
+// One-time cleanup: delete the existing non-admin accounts and everything they
+// own before cameras are loaded or streams are started. Later accounts are kept.
+if (needsNonAdminCleanup()) {
+  const removedUserIds = listNonAdminIds();
+  if (removedUserIds.length) {
+    const before = getCameras();
+    for (const cam of before.filter((item) => removedUserIds.includes(item.ownerId))) {
+      streams.stopCamera(cam.id);
+      if (fs.existsSync(STREAM_DIR)) {
+        for (const entry of fs.readdirSync(STREAM_DIR)) {
+          if (entry.startsWith(`${cam.id}_`)) {
+            fs.rmSync(path.join(STREAM_DIR, entry), { recursive: true, force: true });
+          }
+        }
+      }
+    }
+    saveCameras(before.filter((item) => !removedUserIds.includes(item.ownerId)));
+    const removedFiles = [];
+    for (const id of removedUserIds) removedFiles.push(deleteOwnerData(id));
+    deleteUsers(removedUserIds);
+    for (const name of removedFiles.flatMap((files) => files.snapshots)) {
+      fs.rmSync(path.join(SNAPSHOT_DIR, path.basename(name)), { force: true });
+    }
+    for (const name of removedFiles.flatMap((files) => files.clips)) {
+      removeAlertClip(path.basename(name));
+    }
+    console.log(`Accounts: removed ${removedUserIds.length} non-admin account${removedUserIds.length === 1 ? '' : 's'} and their data`);
+  }
+  markNonAdminCleanupDone();
+}
+
 // Cameras saved before accounts existed belong to the admin. This has to
 // happen before placements are filled in, which are created per owner.
 let cameras = getCameras();

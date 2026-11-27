@@ -80,12 +80,14 @@ export function registerAccountRoutes(app, publicDir) {
     contact: config.contactEmail || null,
   }));
 
-  app.post('/api/setup', (req, res) => {
+  app.post('/api/setup', async (req, res) => {
     if (isSetupComplete()) return res.status(409).json({ error: 'Setup already completed' });
-    const { username, password } = req.body || {};
+    const password = req.body?.password;
+    const email = normalizeEmail(req.body?.email);
     const building = typeof req.body?.building === 'string' ? req.body.building.trim() : '';
-    if (!username || typeof username !== 'string' || username.length > 64) {
-      return res.status(400).json({ error: 'Username is required' });
+    if (!email) return res.status(400).json({ error: 'Enter a valid email address' });
+    if (!mailEnabled) {
+      return res.status(503).json({ error: 'Email verification is required. Configure email before completing setup.' });
     }
     if (!validPassword(password)) {
       return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters` });
@@ -95,23 +97,23 @@ export function registerAccountRoutes(app, publicDir) {
     if (!building || building.length > 100) {
       return res.status(400).json({ error: 'Building name is required (100 characters or fewer)' });
     }
-    const admin = createAdmin(username.trim(), password);
+    const admin = createAdmin(email, password);
     const createdBuilding = createBuilding(building, admin.id);
-    signIn(req, admin, () => res.json({ ok: true, building: createdBuilding }));
+    await sendVerify(req, admin);
+    res.json({ ok: true, signedIn: false, building: createdBuilding });
   });
 
   app.post('/api/login', (req, res) => {
     const ip = req.ip;
     if (isLockedOut(ip)) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
-    const { username, password } = req.body || {};
-    const user = typeof username === 'string' && typeof password === 'string'
-      ? checkLogin(username.trim(), password) : null;
+    const { email, password } = req.body || {};
+    const user = typeof email === 'string' && typeof password === 'string'
+      ? checkLogin(email.trim(), password) : null;
     if (!user) {
       recordFailure(ip);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    // Without email there is no way to confirm an address, so it is not required.
-    if (!user.verified && mailEnabled) {
+    if (!user.verified) {
       return res.status(403).json({ error: 'Confirm your email first. Check your inbox for the link, or use "Forgot password" to get a new one.' });
     }
     clearFailures(ip);
@@ -134,17 +136,12 @@ export function registerAccountRoutes(app, publicDir) {
     }
     if (throttled(req, email)) return res.status(429).json({ error: 'Too many requests. Try again in 15 minutes.' });
 
-    const existing = findByEmail(email);
     if (!mailEnabled) {
-      // No way to confirm an address (home install without email set up). The
-      // account stays unconfirmed, so if its real owner later arrives through
-      // Google or a reset link, this password is dropped rather than trusted.
-      if (existing) return res.status(409).json({ error: 'That email already has an account' });
-      const user = createUser({ email, passwordHash: hashPassword(password) });
-      return signIn(req, user, () => res.json({ ok: true, signedIn: true }));
+      return res.status(503).json({ error: 'Email verification is required, but this server cannot send email.' });
     }
-    // With email, answer the same way whether or not the address is known, so
-    // this form cannot be used to find out who has an account.
+    // Answer the same way whether or not the address is known, so this form
+    // cannot be used to find out who has an account.
+    const existing = findByEmail(email);
     if (!existing) {
       await sendVerify(req, createUser({ email, passwordHash: hashPassword(password) }));
     } else if (!existing.verified) {
@@ -164,11 +161,25 @@ export function registerAccountRoutes(app, publicDir) {
     res.json({ ok: true, signedIn: false });
   });
 
+  // The emailed link is the only way an unverified account becomes usable.
   app.get('/verify', (req, res) => {
+    if (!mailEnabled) return res.redirect('/login.html?notice=badlink');
     const user = consumeToken(req.query.token, 'verify');
     if (!user) return res.redirect('/login.html?notice=badlink');
     markVerified(user.id);
     signIn(req, user, () => res.redirect('/'));
+  });
+
+  // Let someone resend a lost confirmation link without creating another
+  // account. Always answers the same way so mailboxes cannot be enumerated.
+  app.post('/api/resend-verification', async (req, res) => {
+    if (!mailEnabled) return res.status(503).json({ error: 'This server cannot send email' });
+    const email = normalizeEmail(req.body?.email);
+    if (!email) return res.status(400).json({ error: 'Enter a valid email address' });
+    if (throttled(req, email)) return res.status(429).json({ error: 'Too many requests. Try again in 15 minutes.' });
+    const user = findByEmail(email);
+    if (user && !user.verified) await sendVerify(req, user);
+    res.json({ ok: true });
   });
 
   // ---- forgotten password ----
@@ -268,10 +279,10 @@ export function registerAccountRoutes(app, publicDir) {
       if (byEmail) {
         // Google vouches for the address, so this is the same person.
         linkGoogle(byEmail.id, claims.sub, email);
-        user = byEmail;
-      } else if (config.allowSignup) {
-        user = createUser({ email, googleSub: claims.sub, verified: true });
+        user = getUser(byEmail.id);
       } else {
+        // Never make an account from Google alone: a password account must
+        // first be created and verified so ownership is unambiguous.
         return fail('nosignup');
       }
     }

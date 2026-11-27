@@ -18,8 +18,9 @@
 .auth-links {
   display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 16px; font-size: 13px;
 }
-.auth-links a { color: var(--accent); text-decoration: none; }
-.auth-links a:hover { text-decoration: underline; }
+.auth-links a, .link-button { color: var(--accent); text-decoration: none; }
+.auth-links a:hover, .link-button:hover { text-decoration: underline; }
+.link-button { padding: 0; border: 0; background: none; font: inherit; cursor: pointer; }
 .notice { margin-top: 12px; font-size: 14px; line-height: 1.4; }
 .auth-card a.brand { color: inherit; text-decoration: none; margin-bottom: 10px; }
 .plain-link { color: var(--accent); }

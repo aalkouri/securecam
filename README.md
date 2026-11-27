@@ -26,14 +26,24 @@ versions hold native packages' install scripts back by default.)
 To restart a running server (or start it in the background), run
 `npm run restart`. It logs to `data/server.log`.
 
-Open http://localhost:8080. The first visit asks you to create the admin account
-and the first **building**. Camera placement follows a **Building → Room**
-hierarchy. Existing installations are migrated automatically to a fabricated
-`Main Building / Default Room` so every camera has a valid placement.
+Open http://localhost:8080. The first visit asks for the admin's **email
+address**, a password and the first **building**. Email delivery must be
+configured (`RESEND_API_KEY` and `MAIL_FROM`, or `MAIL_LOG=1` while testing):
+the account is created only after the emailed confirmation link is opened, so
+nobody can register an address they do not own. Email addresses are the only
+usernames; the old username field has been renamed everywhere.
 
-An account that starts without a building is guided through a three-step setup
-on first sign-in: **Building → Room → Camera**. The guide cannot be dismissed;
-by the camera step, the new building and room are already filled in.
+On first sign-in, an account without a building sees a two-step guide: a house
+photo with **Building name**, then a moving carousel of room photos with **Room
+name**. The button says **Next**, then **Finish**. The guide cannot be dismissed;
+finishing drops straight into the dashboard with the new building and room
+selected on the floor plan. Existing installations are migrated automatically
+to a fabricated `Main Building / Default Room` so every camera has a valid
+placement.
+
+Only the admin account is kept. Any non-admin accounts and their cameras,
+buildings, rooms, objects, sightings, alerts and media files are removed at
+startup.
 
 The admin account starts at an **account picker**: a drop-down of every account
 on the server. No cameras, alerts or floor plan are shown until an account is
@@ -41,32 +51,56 @@ selected. After choosing one, the dashboard is the same one that account's owner
 sees. The drop-down at the top of the page switches accounts at any time;
 choosing **Choose an account…** returns to the picker.
 
-The main page opens with an interactive floor plan. Use the **Building**
-drop-down to switch buildings, drag rooms to rearrange them, or drag the corner
-icon to resize it. Arrow keys also nudge a focused room or resize handle. Click
-the building or room title (both use the same boxed label) to rename it, use
+A single, centered camera feed is shown **above** the floor plan. Click a
+camera marker below the feed to switch to that camera; the choice is remembered
+per account, so the last feed viewed is shown on the next visit. A short hint
+above the feed explains this. The stream tools no longer include a restart
+button.
+
+Below the streams is an interactive floor plan on a grass-textured board. Use
+the **Building** drop-down to switch buildings. The black building outline has
+its own corner handle: dragging it resizes only the outline, never the grass or
+the reserved outside area, and it will not pass over a room, a camera marker or
+the outside controls. Drag rooms to rearrange them, or drag the corner icon to
+resize them; arrow keys also nudge a focused room or handle. Click the building
+or room title (both use the same boxed label) to rename it, use
 **+ Room** to add another room, or use the **✕** on a room to delete it. A room
 with cameras cannot be deleted until those cameras are removed. Rooms cannot
-move into the space reserved for the building name and cannot shrink below the
-size needed for their **+ camera** button. Positions and sizes are saved per
-room in SQLite.
+move into the space reserved for the building name, cannot shrink below the
+size needed for their **+ camera** button, and cannot be moved or resized over
+a camera marker. Positions and sizes are saved per room in SQLite.
+
+Creating a camera adds a movable marker with its name underneath. Drag the
+marker within its room; outside cameras can only be dragged on the grass.
+Clicking the marker itself (not its round rotate button) replaces the feed
+above with that camera and scrolls it into view. The active marker is outlined.
+The round button at a marker's top right rotates it clockwise 45° per click — eight clicks make a
+full 360°. Markers may not overlap each other, the fixed
+**Outside** label in the top-left or the **+ Outside Camera** button in the
+bottom-left. The label cannot be edited. Use **+ Outside Camera** to add a
+camera that belongs to the building but sits outside its walls; its tile
+location reads `Outside`.
 
 ## Adding cameras
 
 Click **+ Add camera**. Choose the **building**, then the **room** in that
-building; both are required. If you do not have one yet, select
+building; both are required. If you do not have a building or room yet, select
 *+ Create new building…* or *+ Create new room…* and type the name inline. The
 building and room are stored in SQLite, and the room belongs to its building.
-Each camera tile shows its building and room. You can also click **+ camera**
-inside a room on the floor plan; the form opens with that building and room
-already selected and a name like `Lobby - CAMERA`. If that name is taken, it
-suggests `Lobby - CAMERA 2`, then `CAMERA 3`, and so on. Camera names must be
-unique per account.
+Each camera tile shows its building and room (or `Outside`).
 
-Names, usernames and stream URLs reject special characters. Names allow only
-letters, numbers, spaces and hyphens; the IP address allows letters, numbers,
-dots and hyphens (or a `test://`, `clip://` or RTSP URL). Camera passwords are
-not restricted.
+Clicking **+ camera** inside a room on the floor plan hides the building and
+room fields and fixes the new camera to that room. The **+ Outside Camera**
+button at the bottom-left of the floor plan does the same for an outside camera;
+there is no outside checkbox. Both open with a name like `Lobby - CAMERA` or
+`Outside - CAMERA`. If that name is taken, it suggests `... - CAMERA 2`, then
+`CAMERA 3`, and so on. Camera names must be unique per account.
+
+Account logins always use an email address. Camera names allow only letters,
+numbers, spaces and hyphens; the camera IP address allows letters, numbers,
+dots and hyphens (or a `test://`, `clip://` or RTSP URL). Reolink camera login
+usernames are whatever the camera vendor uses (usually `admin`) and are not
+email addresses. Camera passwords are not restricted.
 
 - **Reolink:** choose *Reolink* and enter the camera's IP address, username
   (usually `admin`) and password. Turn on RTSP first in the Reolink app:
@@ -184,6 +218,15 @@ camera can create a new one.
 | `SECURECAM_DATA` | `./data`  | Where settings, cameras and live segments live    |
 | `FFPROBE_PATH` | next to ffmpeg | Path to the ffprobe binary                   |
 | `FFMPEG_PATH`  | `ffmpeg`    | Path to the ffmpeg binary                         |
+| `PUBLIC_URL`   | request URL | Public address used in emailed confirmation links |
+| `RESEND_API_KEY` | none      | Resend key for verification/reset emails           |
+| `MAIL_FROM`    | none        | Verified sender address, e.g. `SecureCam <noreply@example.com>` |
+| `MAIL_LOG`     | `0`         | `1` prints emailed links to the server log (testing only) |
+| `ALLOW_SIGNUP` | `1`         | Allow the email-verified signup page               |
+
+Email verification is mandatory: without `RESEND_API_KEY` + `MAIL_FROM` (or
+`MAIL_LOG=1` for local testing), setup and signup cannot complete. The signup
+page also has **Resend confirmation** for a lost verification link.
 
 `data/` holds your admin password hash and camera credentials. It is gitignored;
 keep it out of version control.

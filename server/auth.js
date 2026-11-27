@@ -1,7 +1,7 @@
 // Password hashing (scrypt, no native deps), sign-in throttling and the
 // session check. Accounts themselves live in users.js.
 import crypto from 'node:crypto';
-import { userCount, createUser, findByLogin, getUser } from './users.js';
+import { userCount, createUser, findByEmail, normalizeEmail, getUser, setUsernameToEmail } from './users.js';
 
 const KEYLEN = 64;
 
@@ -28,13 +28,16 @@ export function isSetupComplete() {
   return userCount() > 0;
 }
 
-export function createAdmin(username, password) {
-  return createUser({ username, passwordHash: hashPassword(password), verified: true });
+export function createAdmin(email, password) {
+  const user = createUser({ passwordHash: hashPassword(password), verified: true });
+  setUsernameToEmail(user.id, email);
+  return getUser(user.id);
 }
 
-// Returns the account, or null when the email/username or password is wrong.
+// Returns the account, or null when the email or password is wrong.
 export function checkLogin(login, password) {
-  const user = findByLogin(login);
+  const email = normalizeEmail(login);
+  const user = email ? findByEmail(email) : null;
   const ok = verifyPassword(password, user?.passwordHash || DUMMY_HASH);
   return user && user.passwordHash && ok ? user : null;
 }
