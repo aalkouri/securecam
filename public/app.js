@@ -341,6 +341,17 @@ field('cam-building').addEventListener('change', () => {
 });
 field('cam-room').addEventListener('change', updatePlacementFields);
 
+field('cam-host').addEventListener('change', () => {
+  const value = field('cam-host').value.trim();
+  if (!/^(test|clip):\/\//i.test(value)) return;
+  field('cam-type').value = 'generic';
+  showTypeFields();
+  field('cam-url').value = value;
+  const option = [...field('cam-sample').options].find((entry) => entry.value === value);
+  field('cam-sample').value = option ? value : '';
+  camError.textContent = '';
+});
+
 function chooseTestCamera() {
   const option = field('cam-sample').selectedOptions[0];
   if (!option?.value) return;

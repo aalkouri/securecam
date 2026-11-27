@@ -131,6 +131,14 @@ export function validateCamera(body, existing) {
   const type = CAMERA_TYPES.includes(body.type) ? body.type : 'generic';
   const enabled = body.enabled !== false;
 
+  // The IP address field also accepts the short test://sample URLs. Treat
+  // those as test cameras rather than trying to validate them as hostnames.
+  const host = str(body.host, 300);
+  const requestedUrl = str(body.url);
+  if ((isTest(host) || isClip(host)) && (type === 'reolink' || !requestedUrl)) {
+    return validateCamera({ ...body, type: 'generic', url: host, subUrl: body.subUrl || '' }, existing);
+  }
+
   if (type === 'reolink') {
     const host = str(body.host, 300);
     if (!HOST_RE.test(host)) throw new Error('Enter the camera\'s IP address, e.g. 192.168.1.50');

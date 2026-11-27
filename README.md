@@ -69,6 +69,9 @@ any hardware. The available short URLs are:
 | City street | `test://city-street` |
 | Night crossing | `test://night-crossing` |
 
+You can paste any of these addresses into the **IP address** field as well;
+SecureCam saves them as test cameras and no username or password is needed.
+
 The five video feeds loop files from `data/clips/`. Existing installations that
 used `clip://…` URLs are migrated to these `test://` aliases automatically.
 
